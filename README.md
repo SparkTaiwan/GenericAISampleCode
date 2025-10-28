@@ -46,6 +46,97 @@ Contains test programs and related files for integration testing. This includes 
 - **SparkARGO-ARGO Generic AI Integration Sample Code Guide Version 1.2.pdf**: English guide providing an overview of the architecture and design principles.
 - **SparkARGO-Argo 通用 AI 整合文件 version 1.2.pdf**: Chinese documentation with similar content.
 
+## Architecture (textual)
+
+The following is a text-first representation of the runtime architecture and data flow between the test program (represented by `Spark_Test_Prog.exe` — "ARGO") and the `SampleWrapper.exe` wrapper. It reproduces the diagram information in plain text so it is visible in any viewer.
+
+Textual diagram (left = ARGO / Spark_Test_Prog.exe, right = SampleWrapper.exe):
+
+```text
+ARGO / Spark_Test_Prog.exe                   SampleWrapper.exe
++---------------------------+                  +---------------------------+
+| Http Client               | ---(1) ----->    | Http Server               |
+| - Send Alive              |                  | - Receive Alive           |
+| - Send SetParameters      |                  | - Receive SetParameters   |
+| - Send License Check      | <---(1a)----     | - Receive License Check   |
++---------------------------+                  +---------------------------+
+
++---------------------------+                  +---------------------------+
+| Http Server               | <---(2)----      | Http Client               |
+| - Receive Analytics event |                  | - Post analytics result   |
+|   (Post from SampleWrap)  | ---(2a)---->     |   to ARGO                 |
++---------------------------+                  +---------------------------+
+
++---------------------------+                  +---------------------------+
+| Shared memory (writer)    | ===(3) frame===>  | Shared memory (reader)    |
+| - Writes frame bytes      |                  | - Reads frame bytes       |
++---------------------------+                  +---------------------------+
+```
+
+Detailed sequence and data flows (numbered):
+
+1) Control / configuration flow (HTTP):
+   - `Spark_Test_Prog.exe` (ARGO) acts as an HTTP client and sends control messages to `SampleWrapper.exe` HTTP server:
+     - Send Alive (health check)
+     - Send `SetParameters` (analytics configuration JSON)
+     - Send license check requests
+   - `SampleWrapper.exe` responds with HTTP status (OK/400/etc.).
+
+2) Analytics result flow (HTTP):
+   - After analyzing frames, `SampleWrapper.exe` posts analytics results to ARGO's HTTP server (example endpoint: `/PostAnalyticsResult`).
+   - ARGO responds with a confirmation (HTTP OK) upon receipt.
+
+3) Frame / image flow (shared memory):
+   - ARGO writes raw frame/image bytes into a named shared memory segment (includes header fields like status, width, height, timestamp, size).
+   - `SampleWrapper.exe` reads frames from that shared memory for analysis.
+
+Common endpoints and responsibilities:
+- `POST /SetParameters` — set analytics parameters (JSON payload).
+- `GET /Alive` — health check from ARGO to SampleWrapper.
+- `GET /GetLicense` — license validation/request.
+- `POST /PostAnalyticsResult` — endpoint on ARGO to receive analytics/detection results.
+
+Implementation notes:
+- Shared memory is used for high-throughput frame transfer; control and result messages use HTTP/JSON.
+- The C# examples define shared-memory layout (`MMF_Data` struct) and HTTP handlers; the Python example follows the same high-level contract.
+- Separating control (HTTP) and frame transfer (shared memory) reduces IPC overhead and keeps the protocol simple.
+
+If you'd like, I can also add this textual architecture block to `CSharp/README.md` and `Python/README.md` so each language folder documents the same flows.
+
+## SampleWrapper runtime flow
+
+This section describes the runtime behavior and internal processing steps of `SampleWrapper.exe` (the wrapper that performs analytics). Follow these steps to understand what the wrapper does after it starts.
+
+1. Start HTTP server
+   - On startup, `SampleWrapper.exe` creates and starts an HTTP server (port configurable via CLI or config). The server exposes endpoints for control and status (for example, `/Alive`, `/SetParameters`, `/GetLicense`) and returns appropriate HTTP responses.
+
+2. Receive `SetParameters`
+   - When `POST /SetParameters` is received, the server parses the JSON payload and extracts:
+     a. Supported version number(s)
+     b. Post URL for analytics results (`analytics_event_api_url`)
+     c. Image width and height (`image_width`, `image_height`)
+     d. ROI and other detection-related settings (`sensitivity`, `threshold`, `rois`, `jpg_compress`, etc.)
+
+3. Create shared memory
+   - Using the information from `SetParameters` (image size, frame size), the wrapper creates or opens the named shared-memory segment that will be used to read frames. It sets up any internal buffers and state needed to read frame headers (status flags, timestamps, sizes).
+
+4. Read frames from shared memory and run detection
+   - The wrapper continuously polls or waits on the shared-memory segment to find new frames (status flag indicating a fresh frame).
+   - When a new frame is available, it reads the frame bytes (using the agreed header format), converts/decodes if necessary, and passes the frame into the detection pipeline (YOLO model, native DLL, or other analyzer).
+
+5. Post analytics results to ARGO
+   - After inference, the wrapper formats the detection result into the agreed JSON schema (versioned) and POSTs it to the `analytics_event_api_url` provided in step 2 (ARGO's HTTP endpoint).
+   - It expects an HTTP OK response and may retry or log errors on failure.
+
+Continuous operation and control
+   - Steps 4 and 5 repeat continuously while the wrapper is running; the wrapper also concurrently accepts and responds to `Alive` and `GetLicense` requests at any time.
+   - `Alive` should return a simple status (OK + optional metadata). `GetLicense` should validate or return license status per the implementation.
+
+Notes and implementation tips
+   - The shared-memory header (see `MMF_Data` in `CSharp/SampleDLL/dllmain.cpp`) contains useful fields (header/footer markers, status, `image_width`/`image_height`, `image_size`, `timestamp`) — follow the same layout for cross-language compatibility.
+   - Keep HTTP control logic separate from the frame read / detection loop (use separate threads or async tasks) so control endpoints remain responsive.
+   - Implement exponential backoff or retry logic when posting results to ARGO to handle transient network errors.
+
 ## Getting Started
 
 ### Prerequisites

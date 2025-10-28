@@ -38,7 +38,7 @@ struct MMF_Data {
     int image_height = 0;
     //video size
     int image_size = 0;
-    //timestamp in ARGO FileTime style 
+    //timestamp in Windows FileTime style 
     uint64_t  timestamp = 0;
     //video data
     unsigned char image_data[1920 * 1080 * 3];
