@@ -1,0 +1,27 @@
+{
+    "version":"1.2",
+    "analytics_event_api_url":"http://127.0.0.1:9901/PostAnalyticsResult",
+    "image_width": 1280,
+    "image_height":720,
+    "jpg_compress":20,
+    "rois":[ 
+        {"sensitivity": 50,
+        "threshold":   50,
+        "rects": 
+        [			
+            {"x": 100 , "y":100},
+            {"x": 200 , "y":200},
+            {"x": 300 , "y":300},
+            {"x": 400 , "y":400}
+        ]},
+        {"sensitivity": 50,
+        "threshold":   50,
+        "rects": 
+        [			
+            {"x": 500 , "y":500},
+            {"x": 600 , "y":600},
+            {"x": 700 , "y":700},
+            {"x": 800 , "y":800}
+        ]}
+   ]
+}
