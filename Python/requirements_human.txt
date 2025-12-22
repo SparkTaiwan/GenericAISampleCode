@@ -2,4 +2,7 @@ requests
 Pillow
 numpy
 scipy
+torch
+torchvision
+ultralytics
 pyinstaller

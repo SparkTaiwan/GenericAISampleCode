@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include <vector>
+#include "detectors_motion.h"
 
 using namespace std;
 
@@ -55,6 +56,12 @@ thread g_bgThread;
 string g_url;
 CallBackFunction g_callbackFunctionPtr = nullptr;
 bool g_isSetting = false;
+
+// Motion detector instance
+MotionDetector* g_motionDetector = nullptr;
+vector<ROIRect> g_roiRects;
+// Store original ROI points for each ROI region
+vector<vector<ROI>> g_originalRoiPoints;
 
 int getMMF(unsigned char** frame, int& width, int& height, int& size, uint64_t& timestamp)
 {
@@ -142,28 +149,75 @@ void RecognizeTask()
             {
                 if (g_isSetting && image_size > 0 )// get image and is received setting.
                 {
-                    // Perform recognition and fill result   
-                    // for debug ==> this should be some detected method return roi_rects and count;
-                    if (count % 60 == 0) isDetected = true; 
-                    
-                    if (isDetected && g_callbackFunctionPtr)
+                    // Use motion detector if available and ROIs are configured
+                    if (g_motionDetector != nullptr && g_roiRects.size() > 0)
                     {
-                        ROI rois[2][4] = {
-                            { {0, 0}, {10, 10}, {30, 30}, {40, 40} },
-                            { {50, 50}, {60, 60}, {70, 70}, {80, 80} }
-                        };                        
-
-                        ROI flattened_rois[2 * 4];
-                        int index = 0;
-                        for (int i = 0; i < 2; ++i) {
-                            for (int j = 0; j < 4; ++j) {
-                                flattened_rois[index] = rois[i][j];
-                                index++;
+                        vector<int> detected_roi_indices;
+                        int detection_count = g_motionDetector->Detect(
+                            image_data, 
+                            image_width, 
+                            image_height,
+                            g_roiRects.data(),
+                            static_cast<int>(g_roiRects.size()),
+                            detected_roi_indices
+                        );
+                        
+                        if (detection_count > 0 && g_callbackFunctionPtr)
+                        {
+                            // Use original ROI points for callback
+                            vector<ROI> flattened_rois;
+                            
+                            for (int roi_idx : detected_roi_indices) {
+                                if (roi_idx >= 0 && roi_idx < g_originalRoiPoints.size()) {
+                                    // Add all original points for this ROI
+                                    for (const auto& point : g_originalRoiPoints[roi_idx]) {
+                                        flattened_rois.push_back(point);
+                                    }
+                                }
                             }
+                            
+                            // Calculate node count (points per ROI)
+                            int nodes_per_detection = detection_count > 0 ? 
+                                static_cast<int>(flattened_rois.size()) / detection_count : 0;
+                            
+                            // Callback to C# layer to send Http event
+                            g_callbackFunctionPtr(
+                                g_portnum, 
+                                image_width, 
+                                image_height, 
+                                image_data, 
+                                image_size, 
+                                timestamp, 
+                                flattened_rois.data(), 
+                                detection_count,
+                                nodes_per_detection
+                            );
                         }
-                        //When detected , callback to C# layer to send Http event to Argo
-                        g_callbackFunctionPtr(g_portnum, image_width, image_height, image_data, image_size, timestamp, flattened_rois, 2,4);
-                        isDetected = false;
+                    }
+                    else
+                    {
+                        // Fallback to original debug code when motion detector is not configured
+                        if (count % 60 == 0) isDetected = true; 
+                        
+                        if (isDetected && g_callbackFunctionPtr)
+                        {
+                            ROI rois[2][4] = {
+                                { {0, 0}, {10, 10}, {30, 30}, {40, 40} },
+                                { {50, 50}, {60, 60}, {70, 70}, {80, 80} }
+                            };                        
+
+                            ROI flattened_rois[2 * 4];
+                            int index = 0;
+                            for (int i = 0; i < 2; ++i) {
+                                for (int j = 0; j < 4; ++j) {
+                                    flattened_rois[index] = rois[i][j];
+                                    index++;
+                                }
+                            }
+                            //When detected , callback to C# layer to send Http event to Argo
+                            g_callbackFunctionPtr(g_portnum, image_width, image_height, image_data, image_size, timestamp, flattened_rois, 2,4);
+                            isDetected = false;
+                        }
                     }
 
                     count++;
@@ -189,13 +243,23 @@ extern "C" {
         // Initialization code
         g_portnum = PortNumber;
         std::cout << "DLL Initialized, Port ID =" << g_portnum << std::endl;
+        
+        // Create motion detector with default parameters
+        if (g_motionDetector == nullptr) {
+            g_motionDetector = new MotionDetector(500, 25, 50);
+            std::cout << "Motion Detector created" << std::endl;
+        }
+        
         g_bgThread = std::thread(RecognizeTask);
-
-
     }
     __declspec(dllexport) void SettingParameters(const struct SettingParameters* parameters)
     {
         g_url = parameters->analytics_event_api_url;
+        
+        // Clear and rebuild ROI list
+        g_roiRects.clear();
+        g_originalRoiPoints.clear();
+        
         // Store parameters
         std::cout << "Parameters set:" << std::endl;
         std::cout << "version: " << parameters->version << std::endl;
@@ -203,21 +267,54 @@ extern "C" {
         std::cout << "image_width: " << parameters->image_width << std::endl;
         std::cout << "image_height: " << parameters->image_height << std::endl;
         std::cout << "jpg_compress: " << parameters->jpg_compress << std::endl;
+        
         for (int i = 0; i < 10; ++i) 
         {
             if (parameters->sensitivity[i] > 0)
             {
-                std::cout << "sensitivity: " << parameters->sensitivity[i] << std::endl;
-                std::cout << "threshold: " << parameters->threshold[i] << std::endl;
+                std::cout << "sensitivity[" << i << "]: " << parameters->sensitivity[i] << std::endl;
+                std::cout << "threshold[" << i << "]: " << parameters->threshold[i] << std::endl;
+                
+                // Update motion detector with first valid threshold/sensitivity
+                if (g_motionDetector != nullptr && i == 0) {
+                    g_motionDetector->SetThresholdAndSensitivity(
+                        parameters->threshold[i], 
+                        parameters->sensitivity[i]
+                    );
+                }
             }
 
+            // Collect ROI rectangles
+            std::vector<ROI> roi_points;
             for (int j = 0; j < 10; ++j) {
                 if (parameters->rois[i][j].x >= 0)
                 {
-                    std::cout << "ROI " << i << ": (" << parameters->rois[i][j].x << ", " << parameters->rois[i][j].y << ")" << std::endl;
+                    roi_points.push_back(parameters->rois[i][j]);
+                    std::cout << "ROI " << i << "[" << j << "]: (" 
+                             << parameters->rois[i][j].x << ", " 
+                             << parameters->rois[i][j].y << ")" << std::endl;
                 }
             }
+            
+            // Convert ROI points to rectangles (assuming points define a polygon/rectangle)
+            // For simplicity, we assume pairs of points define rectangles (x1,y1) and (x2,y2)
+            if (roi_points.size() >= 2) {
+                ROIRect rect;
+                rect.x1 = roi_points[0].x;
+                rect.y1 = roi_points[0].y;
+                rect.x2 = roi_points[1].x;
+                rect.y2 = roi_points[1].y;
+                g_roiRects.push_back(rect);
+                
+                // Save original ROI points
+                g_originalRoiPoints.push_back(roi_points);
+                
+                std::cout << "Configured ROI Rectangle: (" << rect.x1 << "," << rect.y1 
+                         << ") to (" << rect.x2 << "," << rect.y2 << ")" << std::endl;
+            }
         }
+        
+        std::cout << "Total ROI rectangles configured: " << g_roiRects.size() << std::endl;
         g_isSetting =true;
     }
 
@@ -235,6 +332,13 @@ extern "C" {
     {
         // Deinitialization code
         std::cout << "DLL Deinitialized" << std::endl;
+        
+        // Cleanup motion detector
+        if (g_motionDetector != nullptr) {
+            delete g_motionDetector;
+            g_motionDetector = nullptr;
+            std::cout << "Motion Detector destroyed" << std::endl;
+        }
 
         g_bgThread.join();
     }
@@ -263,6 +367,12 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         if (g_bgThread.joinable()) {
             g_running = false;
             g_bgThread.join();
+        }
+        
+        // Cleanup motion detector
+        if (g_motionDetector != nullptr) {
+            delete g_motionDetector;
+            g_motionDetector = nullptr;
         }
         break;
     }

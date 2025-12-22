@@ -27,13 +27,18 @@ REM if exist "build" rmdir /s /q "build"
 REM if exist "*.spec" del /q "*.spec"
 
 echo.
-echo Packaging Python Sample Wrapper (Motion Detection - Lightweight)...
+echo Packaging Python Sample Wrapper...
 pyinstaller --onefile ^
     --name "SampleWrapper" ^
     --collect-all "numpy" ^
     --collect-all "PIL" ^
-    --collect-all "scipy" ^
-    --hidden-import "scipy.ndimage" ^
+    --collect-all "torch" ^
+    --collect-all "ultralytics" ^
+    --collect-all "cv2" ^
+    --hidden-import "torch" ^
+    --hidden-import "torchvision" ^
+    --hidden-import "ultralytics" ^
+    --hidden-import "cv2" ^
     --hidden-import "multiprocessing" ^
     --hidden-import "ctypes" ^
     --hidden-import "threading" ^

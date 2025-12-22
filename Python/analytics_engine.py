@@ -4,7 +4,7 @@ import mmap
 import struct
 import time
 from ctypes import Structure, c_int, c_char, c_char_p, c_uint64, c_ubyte
-from detectors import get_default_detector, BaseDetector
+from detectors_motion import get_default_detector, BaseDetector
 from data_structures import SettingParameters, ROIGroup
 
 
@@ -249,12 +249,29 @@ def SettingParameters(parameters: SettingParameters):
         elif len(roi_group.rects) > 0:
             print(f"  Warning: {len(roi_group.rects)} points provided for ROI group {i}, need 2 or 4 points to form rectangle")
     
-    # Convert threshold and sensitivity to YOLO confidence if we have valid values
-    if active_threshold > 0 and active_sensitivity > 0 and g_detector:
-        from detectors import convert_threshold_to_confidence
-        confidence = convert_threshold_to_confidence(active_threshold, active_sensitivity)
-        g_detector.set_confidence_threshold(confidence)
-        print(f"Set detector confidence threshold: {confidence} (from threshold={active_threshold}, sensitivity={active_sensitivity})")
+    # Reset detector state when ROI changes (important for motion detection)
+    if g_detector and hasattr(g_detector, 'reset'):
+        g_detector.reset()
+        print("Detector state reset for new ROI configuration")
+    
+    # Convert threshold and sensitivity to motion detector parameters
+    if g_detector:
+        # Use default values if not provided
+        if active_threshold == -1:
+            active_threshold = 50  # Default threshold
+        if active_sensitivity == -1:
+            active_sensitivity = 50  # Default sensitivity
+        
+        # For motion detector, set threshold and sensitivity directly
+        if hasattr(g_detector, 'set_threshold_and_sensitivity'):
+            g_detector.set_threshold_and_sensitivity(active_threshold, active_sensitivity)
+            print(f"Set motion detector: threshold={active_threshold}, sensitivity={active_sensitivity}")
+        else:
+            # Fallback to confidence-based setting
+            from detectors_motion import convert_threshold_to_confidence
+            confidence = convert_threshold_to_confidence(active_threshold, active_sensitivity)
+            g_detector.set_confidence_threshold(confidence)
+            print(f"Set detector confidence threshold: {confidence} (from threshold={active_threshold}, sensitivity={active_sensitivity})")
     
     if g_roi_rects:
         print(f"Total ROI rectangles configured: {len(g_roi_rects)}")

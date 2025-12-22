@@ -69,21 +69,21 @@ class ImageProcessor:
         image = Image.fromarray(rgb_array, 'RGB')
         
         # Draw red boxes around detected objects if any
-        if detections:
-            draw = ImageDraw.Draw(image)
-            for detection in detections:
-                if len(detection) == 4:  # (x, y, w, h) format
-                    x, y, w, h = detection
-                    draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=2)
-            
-            # Save the image with red boxes only in debug mode
-            if debug_mode:
-                import datetime
-                now = datetime.datetime.now()
-                timestamp_str = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
-                detection_filename = f"debug_detection_{timestamp_str}.jpg"
-                image.save(detection_filename, format='JPEG', quality=quality, optimize=True)
-                print(f"[ImageProcessor] Saved detection image: {detection_filename} with {len(detections)} boxes")
+        # if detections:
+        #     draw = ImageDraw.Draw(image)
+        #     for detection in detections:
+        #         if len(detection) == 4:  # (x, y, w, h) format
+        #             x, y, w, h = detection
+        #             draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=2)
+        #     
+        #     # Save the image with red boxes only in debug mode
+        #     if debug_mode:
+        #         import datetime
+        #         now = datetime.datetime.now()
+        #         timestamp_str = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
+        #         detection_filename = f"debug_detection_{timestamp_str}.jpg"
+        #         image.save(detection_filename, format='JPEG', quality=quality, optimize=True)
+        #         print(f"[ImageProcessor] Saved detection image: {detection_filename} with {len(detections)} boxes")
         
         # Convert to JPEG and encode as Base64
         buffer = io.BytesIO()
