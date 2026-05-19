@@ -95,6 +95,11 @@ namespace SampleWrapper
         [DllImport("SampleDLL.dll", CallingConvention = CallingConvention.Cdecl)]
         public static extern void Deinitialize();
 
+        [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+        private static extern uint TimeBeginPeriod(uint period);
+        [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+        private static extern uint TimeEndPeriod(uint period);
+
         //Convert YUV420 to Bitmap
         public static Bitmap ConvertYUV420ToBitmap(byte[] yuvBytes, int width, int height)
         {
@@ -139,7 +144,7 @@ namespace SampleWrapper
 
             return bmp;
         }
-        
+
         private static int Clip(int value)
         {
             if (value < 0) return 0;
@@ -164,34 +169,8 @@ namespace SampleWrapper
         // Convert YUV420 directly to Base64 JPEG
         public static string ConvertYUV420ToBase64Jpeg(IntPtr yuvFrame, int image_size, int width, int height, long quality = 50L)
         {
-            byte[] yuvBytes = new byte[image_size];
-            Marshal.Copy(yuvFrame, yuvBytes, 0, image_size);
-
-            using (Bitmap bmp = ConvertYUV420ToBitmap(yuvBytes, width, height))
-            {
-                using (MemoryStream ms = new MemoryStream())
-                {
-                    // Get a JPEG encoder
-                    ImageCodecInfo jpgEncoder = GetEncoder(ImageFormat.Jpeg);
-
-                    // Create an Encoder object based on the Quality parameter category
-                    System.Drawing.Imaging.Encoder myEncoder = System.Drawing.Imaging.Encoder.Quality;
-
-                    // Create an EncoderParameters object
-                    EncoderParameters encoderParameters = new EncoderParameters(1);
-
-                    // Set the quality parameter (0-100)
-                    EncoderParameter encoderParameter = new EncoderParameter(myEncoder, quality);
-                    encoderParameters.Param[0] = encoderParameter;
-
-                    // Save the bitmap as a JPEG file with the quality setting
-                    bmp.Save(ms, jpgEncoder, encoderParameters);
-
-                    byte[] jpegBytes = ms.ToArray();
-                    return Convert.ToBase64String(jpegBytes);
-                }
-            }
-            yuvBytes = null;
+            byte[] jpegBytes = TurboJpegInterop.EncodeI420(yuvFrame, image_size, width, height, (int)quality);
+            return Convert.ToBase64String(jpegBytes);
         }
 
         //C++ Event callback, post imageframe when Analytics detected.
@@ -229,17 +208,13 @@ namespace SampleWrapper
                 }
             }
 
-            // Deep copy of rois into analyticsResult
-            List<List<ROI>> deepCopiedRois = DeepCopyRois(rois);
-
-            // Deep copy of all data including timestamp and rois
             var analyticsResult = new AnalyticsResult
             {
                 version = "1.2",
-                port_num = m_portnum,       // Value types are automatically copied
-                keyframe = string.Copy(base64JpegString), // Ensure the string is copied
-                timestamp = timestamp,      // Value types are automatically copied
-                rois_rects = deepCopiedRois // Deep copy of rois list
+                port_num = m_portnum,
+                keyframe = base64JpegString,
+                timestamp = timestamp,
+                rois_rects = rois
             };
 
             // Enqueue the analytics result for processing
@@ -247,8 +222,6 @@ namespace SampleWrapper
             {
                 httpRequestQueue.Enqueue(analyticsResult);
             }
-
-            rois.Clear();
         }
 
         // Function to deep copy the rois structure
@@ -327,6 +300,7 @@ namespace SampleWrapper
 
         static async Task Main(string[] args)
         {
+            TimeBeginPeriod(1);
 
             Console.WriteLine("Usage: SampleWrapper port=<httpPort>");
             int httpServerPort = 51000;
@@ -364,7 +338,7 @@ namespace SampleWrapper
             Initialize(httpServerPort);
 
             // Set up a timer to process the queue periodically
-            queueProcessorTimer = new Timer(ProcessHttpRequestQueue, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(500));
+            queueProcessorTimer = new Timer(ProcessHttpRequestQueue, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(1));
 
             // Register callback
             callbackDelegate = new CallBackFunction(Callback);

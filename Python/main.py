@@ -224,7 +224,7 @@ class SampleWrapperMain:
             
             # Set a custom detector if needed
             from analytics_engine import set_detector
-            from detectors import get_default_detector
+            from detectors_motion import get_default_detector
             set_detector(get_default_detector())
             
             # Register callback function
