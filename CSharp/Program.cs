@@ -38,6 +38,16 @@ namespace SampleWrapper
 
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 100)]
         public ROI[] rois;
+
+        // v1.3 additions (must match C++ struct layout)
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string mode;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string channel_id;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string count_reset;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 4096)]
+        public string ai_settings_json;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
@@ -62,8 +72,17 @@ namespace SampleWrapper
         public int port_num;
         public string keyframe; 
         public ulong timestamp;
-        public List<List<ROI>> rois_rects; // Pointer to ROI array
-        //public int rois_count;    // Number of ROIs
+        public List<List<ROI>> rois_rects;
+        // v1.3 fields
+        public string channel_id;
+        public string datastring;
+        public List<AnalyticsItem> items;
+    }
+
+    public class AnalyticsItem
+    {
+        public string name;
+        public string value;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -235,11 +254,14 @@ namespace SampleWrapper
             // Deep copy of all data including timestamp and rois
             var analyticsResult = new AnalyticsResult
             {
-                version = "1.2",
+                version = "1.3",
                 port_num = m_portnum,       // Value types are automatically copied
                 keyframe = string.Copy(base64JpegString), // Ensure the string is copied
                 timestamp = timestamp,      // Value types are automatically copied
-                rois_rects = deepCopiedRois // Deep copy of rois list
+                rois_rects = deepCopiedRois, // Deep copy of rois list
+                channel_id = m_portnum.ToString(),
+                datastring = "",
+                items = new List<AnalyticsItem>()
             };
 
             // Enqueue the analytics result for processing

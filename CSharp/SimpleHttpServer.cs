@@ -63,7 +63,14 @@ namespace SampleWrapper
                             jpg_compress = (int)jsonData.jpg_compress,
                             sensitivity = new int[10],  // Initialize sensitivity array
                             threshold = new int[10],    // Initialize threshold array
-                            rois = InitializeRoisArray(100)  // Allocate a 1D array of 100 ROI objects (10x10)
+                            rois = InitializeRoisArray(100),  // Allocate a 1D array of 100 ROI objects (10x10)
+                            // v1.3 fields
+                            mode        = jsonData.mode        != null ? (string)jsonData.mode        : "multi",
+                            channel_id  = jsonData.channel_id  != null ? (string)jsonData.channel_id  : "",
+                            count_reset = jsonData.count_reset != null ? (string)jsonData.count_reset : "session",
+                            ai_settings_json = jsonData.ai_settings != null
+                                               ? JsonConvert.SerializeObject(jsonData.ai_settings)
+                                               : ""
                         };
 
                         // Populate the sensitivity and threshold arrays and rois array
