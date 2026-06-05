@@ -17,6 +17,3 @@ packages/
 
 # Sample videos
 *.mp4
-
-# Local-only simulator (not part of any PR)
-RecorderSimulator/

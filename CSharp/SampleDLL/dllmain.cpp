@@ -24,11 +24,6 @@ struct SettingParameters {
     int sensitivity[10];
     int threshold[10];
     ROI rois[10][10];
-    // v1.3 additions (appended to preserve existing layout)
-    char mode[32];
-    char channel_id[64];
-    char count_reset[32];
-    char ai_settings_json[4096];
 };
 
 
@@ -272,16 +267,6 @@ extern "C" {
         std::cout << "image_width: " << parameters->image_width << std::endl;
         std::cout << "image_height: " << parameters->image_height << std::endl;
         std::cout << "jpg_compress: " << parameters->jpg_compress << std::endl;
-
-        // v1.3 fields
-        if (strlen(parameters->mode) > 0)
-            std::cout << "mode: " << parameters->mode << std::endl;
-        if (strlen(parameters->channel_id) > 0)
-            std::cout << "channel_id: " << parameters->channel_id << std::endl;
-        if (strlen(parameters->count_reset) > 0)
-            std::cout << "count_reset: " << parameters->count_reset << std::endl;
-        if (strlen(parameters->ai_settings_json) > 0)
-            std::cout << "ai_settings_json: " << parameters->ai_settings_json << std::endl;
         
         for (int i = 0; i < 10; ++i) 
         {
@@ -312,8 +297,8 @@ extern "C" {
             }
             
             // Convert ROI points to rectangles (assuming points define a polygon/rectangle)
-            // For simplicity, we assume pairs of points define rectangles (x1,y1) and (x2,y2)
-            if (roi_points.size() >= 2) {
+            // For simplicity, we assume pairs of points define rectangles (x1, y1) and (x3, y3)
+            if (roi_points.size() >= 3) {
                 ROIRect rect;
                 rect.x1 = roi_points[0].x;
                 rect.y1 = roi_points[0].y;
