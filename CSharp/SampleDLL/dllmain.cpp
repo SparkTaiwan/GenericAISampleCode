@@ -246,7 +246,7 @@ extern "C" {
         
         // Create motion detector with default parameters
         if (g_motionDetector == nullptr) {
-            g_motionDetector = new MotionDetector(500, 25, 50);
+            g_motionDetector = new MotionDetector(50, 50);
             std::cout << "Motion Detector created" << std::endl;
         }
         
