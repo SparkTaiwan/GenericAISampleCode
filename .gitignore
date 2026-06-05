@@ -1,0 +1,19 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Visual Studio
+.vs/
+
+# NuGet
+packages/
+
+# Backup files
+*.bak
+
+# Sample videos
+*.mp4

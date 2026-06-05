@@ -7,6 +7,13 @@
 
 using namespace std;
 
+namespace {
+    // Subsample stride: process every kSubSample-th pixel in both x and y inside each ROI.
+    // 2 -> 4x fewer pixels checked; visually indistinguishable for motion detection.
+    // Set to 1 to disable subsampling (matches original per-pixel coverage).
+    constexpr int kSubSample = 1;
+}
+
 MotionDetector::MotionDetector(int min_area, int threshold, int sensitivity)
     : m_minArea(min_area)
     , m_pixelThreshold(threshold)
@@ -104,51 +111,66 @@ int MotionDetector::Detect(const unsigned char* yuv420_frame, int width, int hei
             return 0; // No motion on first frame
         }
         
-        // Calculate absolute difference between frames
-        unsigned char* frame_diff = new unsigned char[y_size];
-        CalculateFrameDiff(current_gray, m_previousFrame, frame_diff, width, height);
-        
-        // Apply threshold to get binary image
-        unsigned char* thresh = new unsigned char[y_size];
-        ThresholdBinary(frame_diff, thresh, width, height, m_pixelThreshold);
-        
-        // Check each ROI for motion
+        // --- Original full-frame two-pass approach (kept for reference) ---
+        // // Calculate absolute difference between frames
+        // unsigned char* frame_diff = new unsigned char[y_size];
+        // CalculateFrameDiff(current_gray, m_previousFrame, frame_diff, width, height);
+        //
+        // // Apply threshold to get binary image
+        // unsigned char* thresh = new unsigned char[y_size];
+        // ThresholdBinary(frame_diff, thresh, width, height, m_pixelThreshold);
+        // --- End original ---
+
+        // Subsampling compensates min_area so the "fraction of ROI moving" stays equivalent.
+        const int subsample_factor = kSubSample * kSubSample;
+        const int effective_min_area = max(1, m_minArea / subsample_factor);
+
+        // Check each ROI for motion (fused diff + threshold + count, ROI-only)
         for (int roi_idx = 0; roi_idx < roi_count; roi_idx++) {
             const ROIRect& roi = roi_rects[roi_idx];
-            
+
             // Ensure roi coordinates are in correct order and within bounds
             int roi_x1 = max(0, min(roi.x1, roi.x2));
             int roi_x2 = min(width, max(roi.x1, roi.x2));
             int roi_y1 = max(0, min(roi.y1, roi.y2));
             int roi_y2 = min(height, max(roi.y1, roi.y2));
-            
-            // Count motion pixels in ROI
+
+            // Fused loop: compute |current - previous|, threshold, and count in one pass
+            // over the ROI only. Early-exit once we've already exceeded the threshold.
             int motion_pixels = 0;
-            for (int y = roi_y1; y < roi_y2; y++) {
-                for (int x = roi_x1; x < roi_x2; x++) {
-                    if (thresh[y * width + x] > 0) {
+            bool roi_done = false;
+            for (int y = roi_y1; y < roi_y2 && !roi_done; y += kSubSample) {
+                const unsigned char* curr_row = current_gray + y * width;
+                const unsigned char* prev_row = m_previousFrame + y * width;
+                for (int x = roi_x1; x < roi_x2; x += kSubSample) {
+                    int diff = static_cast<int>(curr_row[x]) - static_cast<int>(prev_row[x]);
+                    if (abs(diff) > m_pixelThreshold) {
                         motion_pixels++;
+                        if (motion_pixels >= effective_min_area) {
+                            roi_done = true;
+                            break;
+                        }
                     }
                 }
             }
-            
-            // Check if motion exceeds minimum threshold
-            if (motion_pixels >= m_minArea) {
+
+            // Check if motion exceeds minimum threshold (compared on subsampled scale)
+            if (motion_pixels >= effective_min_area) {
                 // Return the ROI index
                 detected_roi_indices.push_back(roi_idx);
-                
-                cout << "[MotionDetector] ✓ Motion detected in ROI[" << roi_idx << "]: (" 
-                     << roi_x1 << ", " << roi_y1 << ") to (" << roi_x2 << ", " << roi_y2 
-                     << ") - " << motion_pixels << " changed pixels" << endl;
+
+                cout << "[MotionDetector] ✓ Motion detected in ROI[" << roi_idx << "]: ("
+                     << roi_x1 << ", " << roi_y1 << ") to (" << roi_x2 << ", " << roi_y2
+                     << ") - " << motion_pixels << " changed pixels (subsample=" << kSubSample << ")" << endl;
             }
         }
-        
+
         // Update previous frame
         memcpy(m_previousFrame, current_gray, y_size);
-        
+
         // Cleanup
-        delete[] frame_diff;
-        delete[] thresh;
+        // delete[] frame_diff;
+        // delete[] thresh;
         
         if (detected_roi_indices.size() > 0) {
             cout << "[MotionDetector] ✓ Total: " << detected_roi_indices.size() << " ROI(s) with motion" << endl;

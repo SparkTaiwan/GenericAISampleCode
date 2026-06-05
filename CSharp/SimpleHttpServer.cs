@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,19 +10,9 @@ namespace SampleWrapper
 
     public class SimpleHttpServer
     {
-        private readonly HttpListener _listener;
-        private SettingParameters _parameters;
-        private bool _updateparams = false ;
+        private const long MaxRequestBodyBytes = 1L * 1024 * 1024;
 
-        private ROI[] InitializeRoisArray(int size)
-        {
-            ROI[] rois = new ROI[size];
-            for (int i = 0; i < size; i++)
-            {
-                rois[i] = new ROI { x = -1, y = -1 }; // Default values
-            }
-            return rois;
-        }
+        private readonly HttpListener _listener;
 
         public SimpleHttpServer(string[] prefixes)
         {
@@ -35,107 +25,167 @@ namespace SampleWrapper
 
         public async Task StartAsync()
         {
+            FileLogger.Info($"HttpListener.Start before (prefixes={string.Join(",", _listener.Prefixes)})");
             _listener.Start();
             Console.WriteLine("HTTP Server started.");
+            FileLogger.Info("HTTP Server started");
 
             while (true)
             {
-                HttpListenerContext context = await _listener.GetContextAsync();
-                HttpListenerRequest request = context.Request;
-                HttpListenerResponse response = context.Response;
+                HttpListenerContext context = null;
+                try
+                {
+                    context = await _listener.GetContextAsync();
+                    await HandleRequestAsync(context);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Error("HTTP server loop error", ex);
+                    try { context?.Response?.OutputStream?.Close(); } catch { }
+                    // Back off so a listener that's stuck in an unrecoverable state doesn't tight-loop
+                    // and drown out real errors in error.log.
+                    await Task.Delay(500);
+                }
+            }
+        }
 
+        private async Task HandleRequestAsync(HttpListenerContext context)
+        {
+            HttpListenerRequest request = context.Request;
+            HttpListenerResponse response = context.Response;
+            string remote = request.RemoteEndPoint != null ? request.RemoteEndPoint.ToString() : "?";
+
+            try
+            {
                 if (request.HttpMethod == "POST" && request.Url.AbsolutePath == "/SetParameters")
                 {
-                    using (StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding))
-                    {
-                        string requestBody = await reader.ReadToEndAsync();
-                        Console.WriteLine($"Received SetParameters request: {requestBody}");
-
-                        // Deserialize JSON into a dynamic object
-                        dynamic jsonData = JsonConvert.DeserializeObject<dynamic>(requestBody);
-
-                        // Initialize SettingParameters structure
-                        SettingParameters settings = new SettingParameters
-                        {
-                            analytics_event_api_url = jsonData.analytics_event_api_url,
-                            image_width = (int)jsonData.image_width,
-                            image_height = (int)jsonData.image_height,
-                            jpg_compress = (int)jsonData.jpg_compress,
-                            sensitivity = new int[10],  // Initialize sensitivity array
-                            threshold = new int[10],    // Initialize threshold array
-                            rois = InitializeRoisArray(100),  // Allocate a 1D array of 100 ROI objects (10x10)
-                            // v1.3 fields
-                            mode        = jsonData.mode        != null ? (string)jsonData.mode        : "multi",
-                            channel_id  = jsonData.channel_id  != null ? (string)jsonData.channel_id  : "",
-                            count_reset = jsonData.count_reset != null ? (string)jsonData.count_reset : "session",
-                            ai_settings_json = jsonData.ai_settings != null
-                                               ? JsonConvert.SerializeObject(jsonData.ai_settings)
-                                               : ""
-                        };
-
-                        // Populate the sensitivity and threshold arrays and rois array
-                        var jsonRois = jsonData.rois;
-                        for (int i = 0; i < jsonRois.Count && i < 10; i++) // Max 10 groups
-                        {
-                            settings.sensitivity[i] = (int)jsonRois[i].sensitivity;
-                            settings.threshold[i] = (int)jsonRois[i].threshold;
-
-                            var rects = jsonRois[i].rects.ToObject<ROI[]>();
-                            for (int j = 0; j < rects.Length && j < 10; j++) // Max 10 rects per group
-                            {
-                                settings.rois[i * 10 + j] = rects[j]; // Flatten into 1D array
-                            }
-                        }
-
-                        _parameters = settings;
-
-                        response.StatusCode = 200;
-                        response.ContentType = "application/json";
-                        var responseString = JsonConvert.SerializeObject(new { message = "Parameters set successfully" });
-                        byte[] buffer = Encoding.UTF8.GetBytes(responseString);
-                        response.ContentLength64 = buffer.Length;
-                        await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                        _updateparams = true;
-                    }
+                    await HandleSetParametersAsync(request, response, remote);
                 }
                 else if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/Alive")
                 {
-                    response.StatusCode = 200;
-                    response.ContentType = "text/plain";
-                    byte[] buffer = Encoding.UTF8.GetBytes("");
-                    response.ContentLength64 = buffer.Length;
-                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    await WriteResponseAsync(response, 200, "text/plain", "");
+                    FileLogger.Info($"Alive received from {remote}");
                 }
                 else if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/GetLicense")
                 {
                     // should add code to check license is exist.
-                    response.StatusCode = 200;
-                    response.ContentType = "text/plain";
-                    byte[] buffer = Encoding.UTF8.GetBytes("");
-                    response.ContentLength64 = buffer.Length;
-                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    await WriteResponseAsync(response, 200, "text/plain", "");
+                    FileLogger.Info($"GetLicense received from {remote}");
                 }
                 else
                 {
-                    response.StatusCode = 404;
-                    byte[] buffer = Encoding.UTF8.GetBytes("Not Found");
-                    response.ContentLength64 = buffer.Length;
-                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    await WriteResponseAsync(response, 404, "text/plain", "Not Found");
                 }
-
-                response.OutputStream.Close();
+            }
+            finally
+            {
+                try { response.OutputStream.Close(); } catch { }
             }
         }
 
-        public bool IsUpdateParam()
+        private async Task HandleSetParametersAsync(HttpListenerRequest request, HttpListenerResponse response, string remote)
         {
-            return _updateparams;
+            // Reject oversized bodies before reading them - this is a localhost endpoint but a
+            // misbehaving local client could still drive us OOM with a multi-GB body.
+            if (request.ContentLength64 > MaxRequestBodyBytes)
+            {
+                FileLogger.Warn($"SetParameters from {remote} rejected: body {request.ContentLength64} bytes > limit {MaxRequestBodyBytes}");
+                await WriteResponseAsync(response, 413, "text/plain", "Payload Too Large");
+                return;
+            }
+
+            string requestBody;
+            try
+            {
+                using (StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding))
+                {
+                    requestBody = await reader.ReadToEndAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Error($"SetParameters from {remote} body read failed", ex);
+                await WriteResponseAsync(response, 400, "text/plain", "Bad Request: failed to read body");
+                return;
+            }
+
+            Console.WriteLine($"Received SetParameters request: {requestBody}");
+
+            SettingParameters settings;
+            int roiGroups;
+            try
+            {
+                settings = ParseSettings(requestBody, out roiGroups);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Error($"SetParameters from {remote} parse failed", ex);
+                await WriteResponseAsync(response, 400, "text/plain", "Bad Request: " + ex.Message);
+                return;
+            }
+
+            try
+            {
+                Program.ApplyParameters(settings);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Error($"SetParameters from {remote} apply failed", ex);
+                await WriteResponseAsync(response, 500, "text/plain", "Apply failed: " + ex.Message);
+                return;
+            }
+
+            string okJson = JsonConvert.SerializeObject(new { message = "Parameters set successfully" });
+            await WriteResponseAsync(response, 200, "application/json", okJson);
+
+            FileLogger.Info($"SetParameters received from {remote} (url={settings.analytics_event_api_url}, " +
+                            $"w={settings.image_width}, h={settings.image_height}, " +
+                            $"jpg={settings.jpg_compress}, roi_groups={roiGroups})");
         }
 
-        public SettingParameters GetParameters()
+        private static SettingParameters ParseSettings(string requestBody, out int roiGroups)
         {
-            _updateparams = false;
-            return _parameters;
+            dynamic jsonData = JsonConvert.DeserializeObject<dynamic>(requestBody);
+
+            SettingParameters settings = new SettingParameters
+            {
+                analytics_event_api_url = (string)jsonData.analytics_event_api_url,
+                image_width = (int)jsonData.image_width,
+                image_height = (int)jsonData.image_height,
+                jpg_compress = (int)jsonData.jpg_compress,
+                sensitivity = new int[10],
+                threshold = new int[10],
+                rois = Program.InitializeRoisArray(100)
+            };
+
+            var jsonRois = jsonData.rois;
+            roiGroups = 0;
+            for (int i = 0; i < jsonRois.Count && i < 10; i++) // Max 10 groups
+            {
+                settings.sensitivity[i] = (int)jsonRois[i].sensitivity;
+                settings.threshold[i] = (int)jsonRois[i].threshold;
+
+                var rects = jsonRois[i].rects.ToObject<ROI[]>();
+                for (int j = 0; j < rects.Length && j < 10; j++) // Max 10 rects per group
+                {
+                    settings.rois[i * 10 + j] = rects[j]; // Flatten into 1D array
+                }
+                roiGroups++;
+            }
+
+            return settings;
+        }
+
+        // Builds the entire response body in memory before committing status/headers, so an
+        // exception mid-write can't leave the client with a half-sent body and a successful
+        // status line.
+        private static async Task WriteResponseAsync(HttpListenerResponse response, int statusCode, string contentType, string body)
+        {
+            byte[] buffer = Encoding.UTF8.GetBytes(body ?? "");
+            response.StatusCode = statusCode;
+            response.ContentType = contentType;
+            response.ContentLength64 = buffer.Length;
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
         }
 
         public void Stop()
