@@ -27,12 +27,11 @@ struct ROIRect {
 class MotionDetector {
 public:
     /**
-     * Constructor
-     * @param min_area Minimum contour area to be considered as motion
-     * @param threshold Pixel difference threshold (0-255), higher = less sensitive to small changes
-     * @param sensitivity Overall sensitivity (0-100), higher = more motion detection
+     * Constructor. Delegates to SetThresholdAndSensitivity so defaults always match the formula.
+     * @param threshold Detection threshold (0-100), higher = bigger pixel diff needed (less sensitive)
+     * @param sensitivity Detection sensitivity (0-100), higher = smaller ROI fraction triggers (more sensitive)
      */
-    MotionDetector(int min_area = 500, int threshold = 25, int sensitivity = 50);
+    MotionDetector(int threshold = 50, int sensitivity = 50);
     
     /**
      * Destructor
@@ -47,9 +46,12 @@ public:
     void SetConfidenceThreshold(float threshold);
     
     /**
-     * Set threshold and sensitivity directly (0-100 scale)
-     * @param threshold Detection threshold (0-100), higher = need bigger changes to detect motion
-     * @param sensitivity Detection sensitivity (0-100), higher = more sensitive to motion
+     * Set threshold and sensitivity (0-100 scale).
+     * threshold maps to m_pixelThreshold (8..40 gray-level diff); sensitivity maps to
+     * m_minRatio (0.05..0.005 of ROI area). Higher threshold = less sensitive to small
+     * brightness changes; higher sensitivity = smaller fraction of ROI needed to trigger.
+     * @param threshold Detection threshold (0-100), higher = need bigger pixel diff to detect motion
+     * @param sensitivity Detection sensitivity (0-100), higher = smaller fraction of ROI triggers motion
      */
     void SetThresholdAndSensitivity(int threshold, int sensitivity);
     
@@ -74,7 +76,9 @@ public:
                std::vector<int>& detected_roi_indices);
 
 private:
-    int m_minArea;
+    // Minimum fraction of each ROI's area (0.0-1.0) that must change to count as motion.
+    // Normalized per-ROI so the same sensitivity setting behaves the same on small and large ROIs.
+    float m_minRatio;
     int m_pixelThreshold;
     int m_sensitivity;
     

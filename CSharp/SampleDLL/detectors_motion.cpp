@@ -14,17 +14,18 @@ namespace {
     constexpr int kSubSample = 1;
 }
 
-MotionDetector::MotionDetector(int min_area, int threshold, int sensitivity)
-    : m_minArea(min_area)
-    , m_pixelThreshold(threshold)
-    , m_sensitivity(sensitivity)
+MotionDetector::MotionDetector(int threshold, int sensitivity)
+    : m_minRatio(0.0f)
+    , m_pixelThreshold(0)
+    , m_sensitivity(0)
     , m_previousFrame(nullptr)
     , m_previousWidth(0)
     , m_previousHeight(0)
 {
-    cout << "[MotionDetector] Initialized with min_area=" << m_minArea 
-         << ", pixel_threshold=" << m_pixelThreshold 
-         << ", sensitivity=" << m_sensitivity << endl;
+    // Delegate so the constructor defaults and the SetThresholdAndSensitivity formula
+    // can never disagree (the prior split caused a "first SetParameters call makes the
+    // detector feel less sensitive" surprise even when the user passed sensitivity=50).
+    SetThresholdAndSensitivity(threshold, sensitivity);
 }
 
 MotionDetector::~MotionDetector()
@@ -37,36 +38,35 @@ MotionDetector::~MotionDetector()
 
 void MotionDetector::SetConfidenceThreshold(float threshold)
 {
-    // Convert confidence (0.0-1.0) to motion detection parameters
-    // Lower confidence = more sensitive = detect more motion
-    m_sensitivity = static_cast<int>((1.0f - threshold) * 100.0f);
-    m_pixelThreshold = static_cast<int>(threshold * 50.0f);
-    m_minArea = static_cast<int>(500 + threshold * 1500);
-    
-    cout << "[MotionDetector] Threshold set to " << threshold 
-         << " -> sensitivity=" << m_sensitivity 
-         << ", pixel_threshold=" << m_pixelThreshold 
-         << ", min_area=" << m_minArea << endl;
+    // Lower confidence = more sensitive. Delegate so there's only one source of truth
+    // for the motion parameters (the prior split kept two formulas in sync by hand).
+    float c = max(0.0f, min(1.0f, threshold));
+    int t = static_cast<int>(c * 100.0f);
+    int s = static_cast<int>((1.0f - c) * 100.0f);
+    SetThresholdAndSensitivity(t, s);
 }
 
 void MotionDetector::SetThresholdAndSensitivity(int threshold, int sensitivity)
 {
-    // Clamp sensitivity to valid range
+    int t = max(0, min(100, threshold));
     m_sensitivity = max(0, min(100, sensitivity));
-    
-    // Convert threshold (0-100) to pixel difference threshold (0-50)
-    // Higher threshold = higher pixel difference needed = less sensitive
-    m_pixelThreshold = static_cast<int>((threshold / 100.0) * 50.0);
-    
-    // Convert sensitivity to min_area
-    // Higher sensitivity = lower min_area = detect smaller motions
-    // Scale: 100 sensitivity -> 300 px, 50 sensitivity -> 1000 px, 0 sensitivity -> 2000 px
-    m_minArea = static_cast<int>(2000 - (m_sensitivity / 100.0) * 1700);
-    
-    cout << "[MotionDetector] Set threshold=" << threshold 
-         << ", sensitivity=" << sensitivity 
-         << " -> pixel_threshold=" << m_pixelThreshold 
-         << ", min_area=" << m_minArea << endl;
+
+    // threshold 0..100 -> pixel diff 8..40. Keeping a non-zero floor avoids the prior
+    // degenerate case where threshold=0 made every +/-1 compression artifact count as
+    // motion; the upper bound matches the typical 25-40 range used in OpenCV tutorials.
+    m_pixelThreshold = 8 + static_cast<int>((t / 100.0) * 32.0);
+
+    // sensitivity 0..100 -> ROI area fraction 0.20..0.005 (20% .. 0.5%). Stored as a
+    // ratio (not an absolute pixel count) so the same setting behaves consistently on
+    // a 100x100 ROI and a 1920x1080 ROI; Detect() multiplies by each ROI's own area.
+    // Wide range so the low end ignores small/distant motion (only large objects entering
+    // the frame trigger) and the high end still catches subtle movement for surveillance.
+    m_minRatio = 0.20f - (m_sensitivity / 100.0f) * 0.195f;
+
+    cout << "[MotionDetector] Set threshold=" << threshold
+         << ", sensitivity=" << sensitivity
+         << " -> pixel_threshold=" << m_pixelThreshold
+         << ", min_ratio=" << m_minRatio << endl;
 }
 
 void MotionDetector::Reset()
@@ -123,7 +123,6 @@ int MotionDetector::Detect(const unsigned char* yuv420_frame, int width, int hei
 
         // Subsampling compensates min_area so the "fraction of ROI moving" stays equivalent.
         const int subsample_factor = kSubSample * kSubSample;
-        const int effective_min_area = max(1, m_minArea / subsample_factor);
 
         // Check each ROI for motion (fused diff + threshold + count, ROI-only)
         for (int roi_idx = 0; roi_idx < roi_count; roi_idx++) {
@@ -135,8 +134,19 @@ int MotionDetector::Detect(const unsigned char* yuv420_frame, int width, int hei
             int roi_y1 = max(0, min(roi.y1, roi.y2));
             int roi_y2 = min(height, max(roi.y1, roi.y2));
 
+            // Per-ROI minimum area: m_minRatio (e.g. ~10% at sensitivity=50) of THIS ROI's
+            // pixel count, so the same sensitivity setting fires consistently on small and
+            // large ROIs (the prior absolute min_area made a 100x100 ROI need 10% motion and
+            // a 1920x1080 ROI need 0.05% - same setting, wildly different behavior).
+            const int roi_area = (roi_x2 - roi_x1) * (roi_y2 - roi_y1);
+            const int effective_min_area = max(1, static_cast<int>(roi_area * m_minRatio) / subsample_factor);
+
             // Fused loop: compute |current - previous|, threshold, and count in one pass
-            // over the ROI only. Early-exit once we've already exceeded the threshold.
+            // over the ROI only. Early-exit once motion_pixels reaches effective_min_area
+            // so a high-fps multi-channel deployment doesn't pay for a full 1080p scan on
+            // every triggered frame. motion_pixels at the log point therefore reflects the
+            // trigger threshold, not the full count - the log states this explicitly with
+            // ">=" so a reader doesn't mistake it for the actual number of moving pixels.
             int motion_pixels = 0;
             bool roi_done = false;
             for (int y = roi_y1; y < roi_y2 && !roi_done; y += kSubSample) {
@@ -159,9 +169,11 @@ int MotionDetector::Detect(const unsigned char* yuv420_frame, int width, int hei
                 // Return the ROI index
                 detected_roi_indices.push_back(roi_idx);
 
-                cout << "[MotionDetector] ✓ Motion detected in ROI[" << roi_idx << "]: ("
+                cout << "[MotionDetector] Motion detected in ROI[" << roi_idx << "]: ("
                      << roi_x1 << ", " << roi_y1 << ") to (" << roi_x2 << ", " << roi_y2
-                     << ") - " << motion_pixels << " changed pixels (subsample=" << kSubSample << ")" << endl;
+                     << ") - >=" << motion_pixels << " changed pixels (early-exit, full count not computed; "
+                     << "subsample=" << kSubSample << ", roi_area=" << roi_area
+                     << ", min_area=" << effective_min_area << ")" << endl;
             }
         }
 
@@ -173,7 +185,7 @@ int MotionDetector::Detect(const unsigned char* yuv420_frame, int width, int hei
         // delete[] thresh;
         
         if (detected_roi_indices.size() > 0) {
-            cout << "[MotionDetector] ✓ Total: " << detected_roi_indices.size() << " ROI(s) with motion" << endl;
+            cout << "[MotionDetector] Total: " << detected_roi_indices.size() << " ROI(s) with motion" << endl;
         }
         
         return static_cast<int>(detected_roi_indices.size());
