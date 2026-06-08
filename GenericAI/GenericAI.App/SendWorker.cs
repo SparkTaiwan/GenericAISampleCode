@@ -33,35 +33,81 @@ namespace GenericAI.App
             {
                 try
                 {
-                    while (true)
+                    // Fair round-robin TakeFromAny replacement — see
+                    // EncodeWorker for rationale. TakeFromAny biases toward
+                    // index 0; with N channels all producing concurrently
+                    // the later channels never get serviced.
+                    int n = _allSendQs.Length;
+                    int cursor = 0;
+                    while (!ct.IsCancellationRequested)
                     {
-                        HttpEnvelope env;
-                        int idx = BlockingCollection<HttpEnvelope>.TakeFromAny(_allSendQs, out env, ct);
-                        if (idx < 0) break;
+                        HttpEnvelope env = default(HttpEnvelope);
+                        int idx = -1;
+                        for (int i = 0; i < n; i++)
+                        {
+                            int probe = (cursor + i) % n;
+                            if (_allSendQs[probe].TryTake(out env))
+                            {
+                                idx = probe;
+                                cursor = (probe + 1) % n;
+                                break;
+                            }
+                        }
+
+                        if (idx < 0)
+                        {
+                            bool allDone = true;
+                            for (int i = 0; i < n; i++)
+                            {
+                                if (!_allSendQs[i].IsCompleted) { allDone = false; break; }
+                            }
+                            if (allDone) break;
+                            try { await Task.Delay(1, ct).ConfigureAwait(false); }
+                            catch (OperationCanceledException) { break; }
+                            continue;
+                        }
 
                         TimingRecorder.Instance.MarkSendQueueOut(env.timestamp);
 
                         ChannelHandle channel = _channelsByIdx[idx];
 
-                        string url = channel.Parameters.Url;
-                        if (string.IsNullOrEmpty(url))
+                        // Retry until success or shutdown. Wrapper never drops
+                        // frames on its own: empty URL, HTTP timeout, network
+                        // outage all backpressure through this worker. The
+                        // worker holds onto `env`, SendQ accumulates, EncodeQ
+                        // backs up, callback blocks, dispatch_q fills, InferLoop
+                        // stalls, infer_q fills, MmfReader stops acking — share
+                        // memory writer is stalled until the downstream
+                        // recovers.
+                        while (!ct.IsCancellationRequested)
                         {
-                            _drops.IncSendDropped();
-                            TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.DroppedUrlEmpty);
-                            continue;
-                        }
+                            string url = channel.Parameters.Url;
+                            if (string.IsNullOrEmpty(url))
+                            {
+                                // URL not yet configured (or cleared) — hold
+                                // this envelope and wait for /SetParameters.
+                                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+                                continue;
+                            }
 
-                        try
-                        {
-                            await _client.PostAsync(url, env).ConfigureAwait(false);
-                            Console.WriteLine("Detected!! send analytics result to server!!");
-                            FileLogger.Info($"Analytics result posted ok (ch={env.port_num})");
-                            TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.Ok);
-                        }
-                        catch (Exception ex)
-                        {
-                            FileLogger.Error("SendWorker POST failed", ex);
-                            TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.DroppedHttpException);
+                            try
+                            {
+                                await _client.PostAsync(url, env).ConfigureAwait(false);
+                                Console.WriteLine("Detected!! send analytics result to server!!");
+                                FileLogger.Info($"Analytics result posted ok (ch={env.port_num})");
+                                TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.Ok);
+                                break;
+                            }
+                            catch (Exception ex) when (!ct.IsCancellationRequested)
+                            {
+                                // Transient or persistent HTTP failure (5s
+                                // client timeout, refused connection, 5xx,
+                                // DNS, ...). Log at Warn (not Error) since
+                                // retry is the expected behaviour, then back
+                                // off 1s before trying the same envelope again.
+                                FileLogger.Warn($"SendWorker POST failed (ch={env.port_num}), will retry: {ex.Message}");
+                                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+                            }
                         }
                     }
                 }

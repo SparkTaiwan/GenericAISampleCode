@@ -30,11 +30,46 @@ namespace GenericAI.App
             {
                 try
                 {
-                    while (true)
+                    // Fair round-robin TakeFromAny replacement. .NET's
+                    // BlockingCollection<T>.TakeFromAny always probes from
+                    // index 0 on each wake, so when every channel has frames
+                    // queued the worker only ever drains ch0/ch1 and the
+                    // later channels starve. We track a per-worker cursor
+                    // and try queues in (cursor, cursor+1, ...) order, then
+                    // advance the cursor past whatever we took.
+                    int n = _allEncodeQs.Length;
+                    int cursor = 0;
+                    while (!ct.IsCancellationRequested)
                     {
-                        RawDetection raw;
-                        int idx = BlockingCollection<RawDetection>.TakeFromAny(_allEncodeQs, out raw, ct);
-                        if (idx < 0) break;
+                        RawDetection raw = default(RawDetection);
+                        int idx = -1;
+                        for (int i = 0; i < n; i++)
+                        {
+                            int probe = (cursor + i) % n;
+                            if (_allEncodeQs[probe].TryTake(out raw))
+                            {
+                                idx = probe;
+                                cursor = (probe + 1) % n;
+                                break;
+                            }
+                        }
+
+                        if (idx < 0)
+                        {
+                            // All queues empty. Exit if every queue is
+                            // closed (CompleteAdding + drained); otherwise
+                            // wait briefly. WaitOne(1) returns true if ct
+                            // gets cancelled, false on timeout — no try /
+                            // catch needed for cancellation here.
+                            bool allDone = true;
+                            for (int i = 0; i < n; i++)
+                            {
+                                if (!_allEncodeQs[i].IsCompleted) { allDone = false; break; }
+                            }
+                            if (allDone) break;
+                            if (ct.WaitHandle.WaitOne(1)) break;
+                            continue;
+                        }
 
                         TimingRecorder.Instance.MarkEncodeQueueOut(raw.Timestamp);
 
@@ -69,15 +104,21 @@ namespace GenericAI.App
                                 rois_rects = raw.Rois,
                             };
 
-                            if (!channel.SendQ.TryAdd(env))
-                            {
-                                _drops.IncEncodeDropped();
-                                TimingRecorder.Instance.Flush(raw.Timestamp, TimingRecorder.FrameState.DroppedSendQFull);
-                            }
-                            else
-                            {
-                                TimingRecorder.Instance.MarkSendQueueIn(raw.Timestamp);
-                            }
+                            // Blocking Add: pressure backs up to this worker,
+                            // through EncodeQ -> callback -> native pipeline ->
+                            // share memory. Wrapper never drops frames on its own.
+                            // CompleteAdding (shutdown) wakes a blocked Add with
+                            // InvalidOperationException, caught by the outer catch.
+                            channel.SendQ.Add(env);
+                            TimingRecorder.Instance.MarkSendQueueIn(raw.Timestamp);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // SendQ.CompleteAdding called during shutdown —
+                            // expected when this worker was blocked on Add.
+                            // Exit loop quietly; next TakeFromAny would also
+                            // unblock via the cancellation token.
+                            return;
                         }
                         catch (Exception ex)
                         {

@@ -206,11 +206,18 @@ namespace GenericAI.App
 
                 try { _dispatcher?.Unregister(); } catch { }
 
+                // CompleteAdding both queues up-front: callback may be blocked
+                // on EncodeQ.Add and EncodeWorker may be blocked on SendQ.Add
+                // (backpressure design). If we wait for encode tasks before
+                // CompleteAddingSend, a worker stuck on SendQ.Add would burn
+                // the 5s timeout for nothing. Doing both first lets every
+                // producer wake at once and tasks drain in parallel.
                 if (_channels != null)
                 {
                     foreach (ChannelHandle h in _channels)
                     {
                         try { h.CompleteAddingEncode(); } catch { }
+                        try { h.CompleteAddingSend(); } catch { }
                     }
                 }
                 try
@@ -219,14 +226,6 @@ namespace GenericAI.App
                         Task.WhenAll(_encodeTasks).Wait(TimeSpan.FromSeconds(5));
                 }
                 catch { }
-
-                if (_channels != null)
-                {
-                    foreach (ChannelHandle h in _channels)
-                    {
-                        try { h.CompleteAddingSend(); } catch { }
-                    }
-                }
                 try
                 {
                     if (_sendTasks != null)

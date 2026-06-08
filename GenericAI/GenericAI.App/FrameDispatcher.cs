@@ -101,17 +101,21 @@ namespace GenericAI.App
                     Port = channelId,
                 };
 
-                if (!channel.EncodeQ.TryAdd(raw))
-                {
-                    _drops.IncCallbackDropped();
-                    TimingRecorder.Instance.Flush(timestamp, TimingRecorder.FrameState.DroppedEncodeQFull);
-                }
-                else
-                {
-                    TimingRecorder.Instance.MarkEncodeQueueIn(timestamp);
-                }
+                // Blocking Add: pressure backs up to the native DispatchThread,
+                // through dispatch_q -> InferLoop -> infer_q -> MmfReader ->
+                // share memory. Wrapper never drops frames on its own.
+                // CompleteAdding (shutdown) wakes a blocked Add with
+                // InvalidOperationException, caught by the outer try/catch.
+                channel.EncodeQ.Add(raw);
+                TimingRecorder.Instance.MarkEncodeQueueIn(timestamp);
 
                 FileLogger.Info($"Detection callback: ch={channelId} size={frameSize} w={width} h={height} rois={roisCount} nodes={nodeCount}");
+            }
+            catch (InvalidOperationException)
+            {
+                // EncodeQ.CompleteAdding called during shutdown — expected
+                // when an in-flight callback was blocked on Add. Return
+                // silently; no log, no drop counter (this is not a failure).
             }
             catch (Exception ex)
             {

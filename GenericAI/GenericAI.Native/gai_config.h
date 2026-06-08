@@ -9,7 +9,7 @@
 // Matches the behavior of kDetectorMode in the old CSharp/SampleDLL/dllmain.cpp:19.
 namespace gai {
 
-constexpr DetectorKind kDetectorKind = DetectorKind::Person;
+constexpr DetectorKind kDetectorKind = DetectorKind::Motion;
 
 // Relative to the exe working directory; copied from native-deps/models/ by the csproj at build time.
 // The old equivalent path is g_modelPath in CSharp/SampleDLL/detectors_person.cpp:72.

@@ -110,6 +110,7 @@ bool ChannelPipeline::TryAcquireWork(FrameSlot*& slot, ParamSnapshot::View& view
 
 void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
                                    int rois_count, int node_count) {
+    using namespace std::chrono;
     if (!slot) return;
     std::uint64_t ts = slot->timestamp;
     ChannelDetectionPacket pkt;
@@ -117,12 +118,23 @@ void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
     pkt.rois_flat  = std::move(flat);
     pkt.rois_count = rois_count;
     pkt.node_count = node_count;
-    if (!dispatch_q_ || !dispatch_q_->TryPush(std::move(pkt))) {
-        TimingRecorder::Instance().Flush(ts, TimingRecorder::FrameState::DroppedDispatchQFull);
-        if (pool_) pool_->Release(slot);
-    } else {
-        TimingRecorder::Instance().MarkDispatchQueueIn(ts);
+
+    // Spin-with-sleep instead of dropping: pressure backs up through this
+    // channel's dispatch_q -> BufferPool -> MmfReader -> share memory
+    // writer. Caller (InferLoop / GpuLoop) is a single shared thread, so
+    // this also stalls every other channel's detection -- accepted by
+    // design: a wedged callback halts the whole detector and resumes
+    // when the downstream drains. TryPushRef leaves `pkt` intact on
+    // failure so we can retry the same payload.
+    while (running_.load(std::memory_order_acquire)) {
+        if (dispatch_q_ && dispatch_q_->TryPushRef(pkt)) {
+            TimingRecorder::Instance().MarkDispatchQueueIn(ts);
+            return;
+        }
+        std::this_thread::sleep_for(milliseconds(1));
     }
+    // Shutdown while still holding the slot -- release to avoid leak.
+    if (pool_) pool_->Release(slot);
 }
 
 void ChannelPipeline::CommitEmpty(FrameSlot* slot) {

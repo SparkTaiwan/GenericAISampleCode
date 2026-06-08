@@ -8,15 +8,12 @@
 #include <vector>
 
 // Per-channel state for MotionDetector. previous_frame is genuine cross-frame
-// state (the diff needs the previous Y plane). frame_diff / thresh are work
-// buffers parked here to avoid a per-Detect heap alloc — they only resize when
-// width/height change.
+// state (the diff needs the previous Y plane); the per-ROI fused loop computes
+// diff/threshold/count in one pass so no full-frame work buffers are needed.
 struct MotionDetectorContext : public gai::DetectorContext {
     std::vector<unsigned char> previous_frame;
     int previous_width = 0;
     int previous_height = 0;
-    std::vector<unsigned char> frame_diff;
-    std::vector<unsigned char> thresh;
 };
 
 // Motion detector using Y-channel frame differencing. Stateless w.r.t.

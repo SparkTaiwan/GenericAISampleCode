@@ -137,13 +137,22 @@ void MmfReader::Run() {
         data->image_status = 2;
         frames_read_.fetch_add(1, std::memory_order_relaxed);
 
-        if (!out_.TryPush(slot)) {
-            // Infer queue full — return slot to pool and count as drop.
-            TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::DroppedInferQFull);
+        // Spin-with-sleep instead of dropping: keep retrying until the
+        // slot is accepted, or shutdown. Wrapper never drops frames on its
+        // own — pressure backs up through pool exhaustion (Acquire above)
+        // to share memory. TryPushRef leaves `slot` intact on failure so
+        // we can retry the same value.
+        while (running_.load(std::memory_order_acquire)) {
+            if (out_.TryPushRef(slot)) {
+                TimingRecorder::Instance().MarkInferQueueIn(slot->timestamp);
+                slot = nullptr;
+                break;
+            }
+            std::this_thread::sleep_for(milliseconds(1));
+        }
+        if (slot != nullptr) {
+            // Shutdown while still holding the slot — release to avoid leak.
             pool_.Release(slot);
-            frames_dropped_.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            TimingRecorder::Instance().MarkInferQueueIn(slot->timestamp);
         }
     }
 
