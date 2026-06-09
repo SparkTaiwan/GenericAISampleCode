@@ -112,7 +112,6 @@ void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
                                    int rois_count, int node_count) {
     using namespace std::chrono;
     if (!slot) return;
-    std::uint64_t ts = slot->timestamp;
     ChannelDetectionPacket pkt;
     pkt.frame      = slot;
     pkt.rois_flat  = std::move(flat);
@@ -128,7 +127,6 @@ void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
     // failure so we can retry the same payload.
     while (running_.load(std::memory_order_acquire)) {
         if (dispatch_q_ && dispatch_q_->TryPushRef(pkt)) {
-            TimingRecorder::Instance().MarkDispatchQueueIn(ts);
             return;
         }
         std::this_thread::sleep_for(milliseconds(1));
@@ -154,9 +152,6 @@ void ChannelPipeline::DispatchLoop() {
         ChannelDetectionPacket pkt;
         if (!dispatch_q_ || !dispatch_q_->PopWait(pkt, milliseconds(100))) continue;
         if (!pkt.frame) continue;
-
-        TimingRecorder::Instance().MarkDispatchQueueOut(pkt.frame->timestamp);
-        TimingRecorder::Instance().Flush(pkt.frame->timestamp, TimingRecorder::FrameState::Ok);
 
         if (pkt.rois_count > 0) {
             GAI_DetectionCallback cb = nullptr;

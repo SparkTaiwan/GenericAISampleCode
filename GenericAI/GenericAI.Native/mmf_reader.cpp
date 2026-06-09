@@ -132,8 +132,6 @@ void MmfReader::Run() {
         slot->size = size;
         slot->timestamp = data->timestamp;
 
-        TimingRecorder::Instance().MarkRead(slot->timestamp, port_);
-
         data->image_status = 2;
         frames_read_.fetch_add(1, std::memory_order_relaxed);
 
@@ -144,7 +142,6 @@ void MmfReader::Run() {
         // we can retry the same value.
         while (running_.load(std::memory_order_acquire)) {
             if (out_.TryPushRef(slot)) {
-                TimingRecorder::Instance().MarkInferQueueIn(slot->timestamp);
                 slot = nullptr;
                 break;
             }

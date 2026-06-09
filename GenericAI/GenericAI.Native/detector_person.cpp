@@ -485,7 +485,6 @@ struct PersonDetector::Impl {
         slot.lb = ComputeLetterbox(orig_w, orig_h, input_w, input_h);
         PreprocessYoloxI420(yuv, orig_w, orig_h, input_w, input_h,
                             slot.lb, slot.input_buffer.data());
-        gai::TimingRecorder::Instance().MarkDetectPreDone();
     }
 
     void GpuFrame(InFlight& slot) {
@@ -497,7 +496,6 @@ struct PersonDetector::Impl {
         slot.gpu_outputs = session.Run(Ort::RunOptions{nullptr},
                                        in_names_c, &input, 1,
                                        output_names_c.data(), output_names_c.size());
-        gai::TimingRecorder::Instance().MarkDetectGpuDone();
     }
 
     void PostFrame(InFlight& slot, std::vector<DetectionRect>& out_boxes) {

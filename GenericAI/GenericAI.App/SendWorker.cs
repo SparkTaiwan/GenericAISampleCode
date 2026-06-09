@@ -67,8 +67,6 @@ namespace GenericAI.App
                             continue;
                         }
 
-                        TimingRecorder.Instance.MarkSendQueueOut(env.timestamp);
-
                         ChannelHandle channel = _channelsByIdx[idx];
 
                         // Retry until success or shutdown. Wrapper never drops
@@ -95,7 +93,6 @@ namespace GenericAI.App
                                 await _client.PostAsync(url, env).ConfigureAwait(false);
                                 Console.WriteLine("Detected!! send analytics result to server!!");
                                 FileLogger.Info($"Analytics result posted ok (ch={env.port_num})");
-                                TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.Ok);
                                 break;
                             }
                             catch (Exception ex) when (!ct.IsCancellationRequested)

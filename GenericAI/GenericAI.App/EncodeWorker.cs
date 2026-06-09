@@ -71,8 +71,6 @@ namespace GenericAI.App
                             continue;
                         }
 
-                        TimingRecorder.Instance.MarkEncodeQueueOut(raw.Timestamp);
-
                         ChannelHandle channel = _channelsByIdx[idx];
 
                         try
@@ -93,8 +91,6 @@ namespace GenericAI.App
                                 pinned.Free();
                             }
 
-                            TimingRecorder.Instance.MarkJpegDone(raw.Timestamp);
-
                             HttpEnvelope env = new HttpEnvelope
                             {
                                 version = "1.2",
@@ -110,7 +106,6 @@ namespace GenericAI.App
                             // CompleteAdding (shutdown) wakes a blocked Add with
                             // InvalidOperationException, caught by the outer catch.
                             channel.SendQ.Add(env);
-                            TimingRecorder.Instance.MarkSendQueueIn(raw.Timestamp);
                         }
                         catch (InvalidOperationException)
                         {
@@ -123,7 +118,6 @@ namespace GenericAI.App
                         catch (Exception ex)
                         {
                             FileLogger.Error("EncodeWorker frame failed", ex);
-                            try { TimingRecorder.Instance.Flush(raw.Timestamp, TimingRecorder.FrameState.DroppedEncodeException); } catch { }
                         }
                     }
                 }

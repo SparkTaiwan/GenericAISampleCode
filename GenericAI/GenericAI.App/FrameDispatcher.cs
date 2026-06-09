@@ -63,14 +63,11 @@ namespace GenericAI.App
                 if (frameSize <= 0 || frameI420 == IntPtr.Zero || roisCount <= 0 || nodeCount <= 0)
                     return;
 
-                TimingRecorder.Instance.MarkCallbackEnter(timestamp, channelId);
-
                 ChannelHandle channel;
                 if (!_byChannelId.TryGetValue(channelId, out channel))
                 {
                     _drops.IncCallbackDropped();
                     FileLogger.Warn($"Detection callback: unknown channel_id={channelId}");
-                    TimingRecorder.Instance.Flush(timestamp, TimingRecorder.FrameState.DroppedCallbackUnknownChannel);
                     return;
                 }
 
@@ -107,7 +104,6 @@ namespace GenericAI.App
                 // CompleteAdding (shutdown) wakes a blocked Add with
                 // InvalidOperationException, caught by the outer try/catch.
                 channel.EncodeQ.Add(raw);
-                TimingRecorder.Instance.MarkEncodeQueueIn(timestamp);
 
                 FileLogger.Info($"Detection callback: ch={channelId} size={frameSize} w={width} h={height} rois={roisCount} nodes={nodeCount}");
             }
@@ -120,7 +116,6 @@ namespace GenericAI.App
             catch (Exception ex)
             {
                 // Never let an exception unwind into the native caller.
-                try { TimingRecorder.Instance.Flush(timestamp, TimingRecorder.FrameState.DroppedCallbackException); } catch { }
                 try { FileLogger.Error("FrameDispatcher.OnNativeCallback", ex); } catch { }
             }
         }

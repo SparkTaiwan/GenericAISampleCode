@@ -48,11 +48,11 @@ namespace GenericAI.App
 
             int n = parsed.ChannelCount;
             int[] ports = new int[n];
-            for (int k = 0; k < n; k++) ports[k] = parsed.Port + 2 * k;
+            // Consecutive sample ports (aligns with spark.recorder's getExeServerPort() + index scheme).
+            for (int k = 0; k < n; k++) ports[k] = parsed.Port + k;
 
             FileLogger.Init(parsed.Port, parsed.LogDir);
             FileLogger.Enabled = true;
-            TimingRecorder.Instance.Init(parsed.Port);
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (!parsed.PortFromArgs)
             {
@@ -238,8 +238,6 @@ namespace GenericAI.App
                     try { NativeInterop.GAI_Deinitialize(); } catch { }
                     s_nativeInit = false;
                 }
-
-                try { TimingRecorder.Instance.Shutdown(); } catch { }
 
                 if (s_timeBeginPeriodSet)
                 {

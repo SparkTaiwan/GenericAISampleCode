@@ -36,8 +36,6 @@ __declspec(dllexport) int __cdecl GAI_InitializeChannels(const int* ports, int c
             if (!seen.insert(ports[i]).second) return 1;
         }
 
-        gai::TimingRecorder::Instance().Init(ports[0]);
-
         auto det = gai::CreateDetector(gai::kDetectorKind, gai::kDefaultModelPath);
         // Person path needs a usable ONNX session; Motion never returns null.
         if (!det) return 4;
@@ -94,7 +92,6 @@ __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     if (s) {
         try { s->Stop(); } catch (...) {}
     }
-    try { gai::TimingRecorder::Instance().Shutdown(); } catch (...) {}
     return 0;
 }
 
