@@ -4,10 +4,13 @@ namespace GenericAI.App
 {
     internal sealed class CommandLineArgs
     {
-        // Mirrors CSharp/Program.cs:414's default so `F5 / Debug Run` works
-        // without configuring VS launch args. Production spawn always passes
-        // port= explicitly (spark.recorder/.../AStreamPerimeter_GenericAI.cpp:442).
-        public const int DefaultPort = 51000;
+        // Lets `F5 / Debug Run` work without configuring VS launch args.
+        // Production spawn always passes port= explicitly
+        // (spark.recorder/.../AStreamPerimeter_GenericAI.cpp:442). Kept below
+        // Windows' default dynamic port range (49152..65535) so the consecutive
+        // [port, port + channel_count) block doesn't collide with whatever
+        // outbound connections other processes happen to be holding.
+        public const int DefaultPort = 46000;
 
         public int Port { get; private set; } = DefaultPort;
         public bool PortFromArgs { get; private set; }

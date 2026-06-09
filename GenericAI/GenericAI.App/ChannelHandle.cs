@@ -18,9 +18,9 @@ namespace GenericAI.App
             Port = port;
             Parameters = new ParameterStore();
             Listener = new HttpListenerHost(port, Parameters);
-            // cap=5：simulator 場景下「停串流→callback 馬上停」的延遲（殘餘 buffer 排空時間）
-            // 比 backpressure 吸收量重要。100 → 5 把停後殘餘從 3–6 秒壓到 ~200 ms。
-            // 副作用：任何 >150 ms 的 HTTP 抖動會立刻把壓力打回 MMF reader、推升 RS drop。
+            // cap=5: in simulator runs, stop-stream-to-callback-stop latency (residual buffer drain)
+            // matters more than backpressure absorption. 100 -> 5 cuts post-stop residue from 3-6 s to ~200 ms.
+            // Side effect: any HTTP jitter >150 ms immediately pushes pressure back to the MMF reader and raises RS drops.
             EncodeQ = new BlockingCollection<RawDetection>(5);
             SendQ = new BlockingCollection<HttpEnvelope>(5);
         }
