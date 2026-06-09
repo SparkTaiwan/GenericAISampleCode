@@ -27,7 +27,7 @@ constexpr bool kPreferGpu = true;
 //  - true  -> TimingRecorder writes one line per frame to D:\SLog-<port>\timing.native.log
 //  - false -> all TimingRecorder Mark/Flush calls short-circuit; zero log file produced
 // Matching switch on the C# side: TimingRecorder.Enabled in TimingRecorder.cs.
-constexpr bool kEnableTimingLog = true;
+constexpr bool kEnableTimingLog = false;
 
 // === Pipelined inference (route B) ===
 //  - true  -> SharedDetectorScheduler splits InferLoop into PreLoop (CPU

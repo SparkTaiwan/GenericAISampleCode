@@ -9,6 +9,8 @@
 namespace gai {
 
 namespace {
+// Same family of trade-off as C# ChannelHandle's EncodeQueueCapacity / SendQueueCapacity:
+// small caps keep stop-stream-to-callback-stop latency tight at the cost of less burst absorption.
 constexpr std::size_t kPoolSlots        = 2;
 constexpr std::size_t kInferQueueCap    = 2;
 constexpr std::size_t kDispatchQueueCap = 2;
@@ -88,8 +90,7 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
 }
 
 void ChannelPipeline::SetCallback(GAI_DetectionCallback cb) {
-    std::lock_guard<std::mutex> lk(cb_mtx_);
-    callback_ = cb;
+    callback_.store(cb, std::memory_order_release);
 }
 
 void ChannelPipeline::InitContext(IDetector* shared_detector) {
@@ -154,11 +155,7 @@ void ChannelPipeline::DispatchLoop() {
         if (!pkt.frame) continue;
 
         if (pkt.rois_count > 0) {
-            GAI_DetectionCallback cb = nullptr;
-            {
-                std::lock_guard<std::mutex> lk(cb_mtx_);
-                cb = callback_;
-            }
+            auto cb = callback_.load(std::memory_order_acquire);
             if (cb) {
                 cb(port_,
                    pkt.frame->width, pkt.frame->height,

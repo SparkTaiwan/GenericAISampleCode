@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -21,9 +22,17 @@ namespace GenericAI.App
     {
         private const long MaxRequestBodyBytes = 1L * 1024 * 1024;
 
+        // Cap on concurrent in-flight handlers per listener. /SetParameters
+        // and /Alive are both very low frequency in normal operation; this
+        // exists purely so a misbehaving recorder cannot flood the thread
+        // pool via a retry storm.
+        private const int MaxConcurrentHandlers = 8;
+
         private readonly int _port;
         private readonly ParameterStore _params;
         private readonly HttpListener _listener;
+        private readonly SemaphoreSlim _handlerSemaphore =
+            new SemaphoreSlim(MaxConcurrentHandlers, MaxConcurrentHandlers);
 
         public HttpListenerHost(int port, ParameterStore parameters)
         {
@@ -88,39 +97,47 @@ namespace GenericAI.App
 
         private async Task HandleAsync(HttpListenerContext context)
         {
-            HttpListenerRequest req = context.Request;
-            HttpListenerResponse resp = context.Response;
-            string remote = req.RemoteEndPoint != null ? req.RemoteEndPoint.ToString() : "?";
-
+            await _handlerSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/SetParameters")
+                HttpListenerRequest req = context.Request;
+                HttpListenerResponse resp = context.Response;
+                string remote = req.RemoteEndPoint != null ? req.RemoteEndPoint.ToString() : "?";
+
+                try
                 {
-                    await HandleSetParametersAsync(req, resp, remote);
+                    if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/SetParameters")
+                    {
+                        await HandleSetParametersAsync(req, resp, remote);
+                    }
+                    else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/Alive")
+                    {
+                        await Write(resp, 200, "text/plain", "");
+                        FileLogger.Info($"Alive received from {remote}");
+                    }
+                    else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/GetLicense")
+                    {
+                        await Write(resp, 200, "text/plain", "");
+                        FileLogger.Info($"GetLicense received from {remote}");
+                    }
+                    else
+                    {
+                        await Write(resp, 404, "text/plain", "Not Found");
+                    }
                 }
-                else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/Alive")
+                catch (Exception ex)
                 {
-                    await Write(resp, 200, "text/plain", "");
-                    FileLogger.Info($"Alive received from {remote}");
+                    FileLogger.Error($"HTTP handler error from {remote}", ex);
+                    try { await Write(resp, 500, "text/plain", "Server Error"); } catch { }
                 }
-                else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/GetLicense")
+                finally
                 {
-                    await Write(resp, 200, "text/plain", "");
-                    FileLogger.Info($"GetLicense received from {remote}");
+                    try { resp.OutputStream.Close(); } catch { }
                 }
-                else
-                {
-                    await Write(resp, 404, "text/plain", "Not Found");
-                }
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Error($"HTTP handler error from {remote}", ex);
-                try { await Write(resp, 500, "text/plain", "Server Error"); } catch { }
             }
             finally
             {
-                try { resp.OutputStream.Close(); } catch { }
+                _handlerSemaphore.Release();
             }
         }
 
@@ -185,33 +202,47 @@ namespace GenericAI.App
 
         private static NativeInterop.SettingParameters ParseSettings(string body, out int roiGroups)
         {
-            dynamic data = JsonConvert.DeserializeObject<dynamic>(body);
+            SetParametersDto data = JsonConvert.DeserializeObject<SetParametersDto>(body);
+            if (data == null) throw new JsonException("request body is empty or null");
+            if (data.image_width  == null) throw new JsonException("image_width is required");
+            if (data.image_height == null) throw new JsonException("image_height is required");
+            if (data.jpg_compress == null) throw new JsonException("jpg_compress is required");
 
             NativeInterop.SettingParameters s = new NativeInterop.SettingParameters
             {
                 version = "1.2",
-                analytics_event_api_url = (string)data.analytics_event_api_url ?? "",
-                image_width = (int)data.image_width,
-                image_height = (int)data.image_height,
-                jpg_compress = (int)data.jpg_compress,
+                analytics_event_api_url = data.analytics_event_api_url ?? "",
+                image_width = data.image_width.Value,
+                image_height = data.image_height.Value,
+                jpg_compress = data.jpg_compress.Value,
                 sensitivity = new int[10],
                 threshold = new int[10],
                 rois = InitializeRoisArray(100),
             };
 
-            var rois = data.rois;
             roiGroups = 0;
-            if (rois != null)
+            if (data.rois != null)
             {
-                for (int i = 0; i < rois.Count && i < 10; i++)
+                for (int i = 0; i < data.rois.Count && i < 10; i++)
                 {
-                    s.sensitivity[i] = (int)rois[i].sensitivity;
-                    s.threshold[i] = (int)rois[i].threshold;
+                    RoiGroupDto g = data.rois[i];
+                    if (g == null) continue;
+                    if (g.sensitivity == null) throw new JsonException($"rois[{i}].sensitivity is required");
+                    if (g.threshold   == null) throw new JsonException($"rois[{i}].threshold is required");
+                    s.sensitivity[i] = g.sensitivity.Value;
+                    s.threshold[i] = g.threshold.Value;
 
-                    NativeInterop.ROI[] rects = rois[i].rects.ToObject<NativeInterop.ROI[]>();
-                    for (int j = 0; j < rects.Length && j < 10; j++)
+                    if (g.rects != null)
                     {
-                        s.rois[i * 10 + j] = rects[j];
+                        for (int j = 0; j < g.rects.Count && j < 10; j++)
+                        {
+                            RoiDto r = g.rects[j];
+                            if (r == null) continue;
+                            NativeInterop.ROI roi;
+                            roi.x = r.x;
+                            roi.y = r.y;
+                            s.rois[i * 10 + j] = roi;
+                        }
                     }
                     roiGroups++;
                 }
@@ -225,6 +256,39 @@ namespace GenericAI.App
             NativeInterop.ROI[] a = new NativeInterop.ROI[size];
             for (int i = 0; i < size; i++) { a[i].x = -1; a[i].y = -1; }
             return a;
+        }
+
+        // DTOs mirror the /SetParameters wire format (v1.2). Kept private to
+        // the listener because they are not shared with the rest of the app —
+        // ParseSettings copies the values into NativeInterop.SettingParameters /
+        // NativeInterop.ROI which is the canonical in-process representation.
+        // Using property-based DTOs (rather than reading NativeInterop.ROI's
+        // public fields directly) keeps NativeInterop.ROI free of JSON
+        // attributes, so HttpEnvelope.rois_rects's outbound serialization is
+        // untouched.
+        // Nullable ints so a missing field deserializes to null (and we can
+        // 400 on it) rather than silently defaulting to 0 — keeps the
+        // "missing required field" behaviour of the previous dynamic path.
+        private sealed class SetParametersDto
+        {
+            public string analytics_event_api_url { get; set; }
+            public int? image_width { get; set; }
+            public int? image_height { get; set; }
+            public int? jpg_compress { get; set; }
+            public List<RoiGroupDto> rois { get; set; }
+        }
+
+        private sealed class RoiGroupDto
+        {
+            public int? sensitivity { get; set; }
+            public int? threshold { get; set; }
+            public List<RoiDto> rects { get; set; }
+        }
+
+        private sealed class RoiDto
+        {
+            public int x { get; set; }
+            public int y { get; set; }
         }
 
         private static async Task Write(HttpListenerResponse resp, int status, string contentType, string body)

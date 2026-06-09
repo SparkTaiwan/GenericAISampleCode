@@ -8,7 +8,7 @@ English version：see [README.md](README.md).
 
 | 子專案 | 類型 | 產出 | 用途 |
 | --- | --- | --- | --- |
-| `GenericAI.App` | C# (.NET Framework 4.8) | `GenericAI.App.exe` | Host process：HTTP listener、MMF reader、JPEG encode 與 HTTP send worker pool、native interop。 |
+| `GenericAI.App` | C# (.NET Framework 4.8) | `GenericAI.exe` | Host process：HTTP listener、MMF reader、JPEG encode 與 HTTP send worker pool、native interop。 |
 | `GenericAI.Native` | C++ (MSVC v140) | `GenericAI.Native.dll` | Detector 實作 + per-channel pipeline，匯出 `GAI_*` C ABI。 |
 
 ## 需求
@@ -39,7 +39,7 @@ msbuild GenericAI/GenericAI.sln /p:Configuration=Release /p:Platform=x64
 ## 執行
 
 ```
-GenericAI.App.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
+GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
 ```
 
 | 參數 | 預設 | 意義 |
@@ -146,7 +146,7 @@ Detector 內部常數（不在對外協定中）：
 
 `CSharp/` 是舊版單通道 sample wrapper（`SampleWrapper.exe` + `SampleDLL.dll`），保留作為參考程式碼。GenericAI 用於正式部署、取代它：
 
-| | `CSharp/SampleWrapper.exe` | `GenericAI.App.exe` |
+| | `CSharp/SampleWrapper.exe` | `GenericAI.exe` |
 | --- | --- | --- |
 | 每 process channel 數 | 1 | N（單 process 多通道） |
 | Detector | 只有 Motion | Motion 或 Person（YOLOX） |

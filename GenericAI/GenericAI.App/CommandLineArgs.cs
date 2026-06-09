@@ -91,7 +91,7 @@ namespace GenericAI.App
 
         public static string Usage()
         {
-            return "Usage: GenericAI.App.exe [port=<int>] [channel_count=<N>] [log=<dir>]" +
+            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>] [log=<dir>]" +
                    " [encode_workers=<N>] [send_workers=<M>]" +
                    "\n(detector type is a compile-time flag in GenericAI.Native/gai_config.h)";
         }

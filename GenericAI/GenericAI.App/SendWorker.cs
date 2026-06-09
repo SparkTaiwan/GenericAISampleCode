@@ -33,35 +33,14 @@ namespace GenericAI.App
             {
                 try
                 {
-                    // Fair round-robin TakeFromAny replacement — see
-                    // EncodeWorker for rationale. TakeFromAny biases toward
-                    // index 0; with N channels all producing concurrently
-                    // the later channels never get serviced.
-                    int n = _allSendQs.Length;
                     int cursor = 0;
                     while (!ct.IsCancellationRequested)
                     {
-                        HttpEnvelope env = default(HttpEnvelope);
-                        int idx = -1;
-                        for (int i = 0; i < n; i++)
+                        HttpEnvelope env;
+                        int idx = RoundRobinTaker.TryTakeRoundRobin(_allSendQs, ref cursor, out env);
+                        if (idx == -1) break;
+                        if (idx == -2)
                         {
-                            int probe = (cursor + i) % n;
-                            if (_allSendQs[probe].TryTake(out env))
-                            {
-                                idx = probe;
-                                cursor = (probe + 1) % n;
-                                break;
-                            }
-                        }
-
-                        if (idx < 0)
-                        {
-                            bool allDone = true;
-                            for (int i = 0; i < n; i++)
-                            {
-                                if (!_allSendQs[i].IsCompleted) { allDone = false; break; }
-                            }
-                            if (allDone) break;
                             try { await Task.Delay(1, ct).ConfigureAwait(false); }
                             catch (OperationCanceledException) { break; }
                             continue;

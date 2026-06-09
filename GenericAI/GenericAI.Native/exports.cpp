@@ -92,6 +92,7 @@ __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     if (s) {
         try { s->Stop(); } catch (...) {}
     }
+    try { gai::TimingRecorder::Instance().Shutdown(); } catch (...) {}
     return 0;
 }
 

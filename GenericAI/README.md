@@ -6,7 +6,7 @@ Multi-channel AI wrapper that companions Spark Recorder's `AStreamPerimeter_Gene
 
 | Project              | Type                    | Output                   | Purpose                                                                                          |
 | -------------------- | ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `GenericAI.App`    | C# (.NET Framework 4.8) | `GenericAI.App.exe`    | Host process: HTTP listeners, MMF readers, JPEG encode + HTTP send worker pools, native interop. |
+| `GenericAI.App`    | C# (.NET Framework 4.8) | `GenericAI.exe`        | Host process: HTTP listeners, MMF readers, JPEG encode + HTTP send worker pools, native interop. |
 | `GenericAI.Native` | C++ (MSVC v140)         | `GenericAI.Native.dll` | Detector implementations + per-channel pipeline. Exports the `GAI_*` C ABI.                    |
 
 ## Requirements
@@ -38,7 +38,7 @@ Or open `GenericAI/GenericAI.sln` in Visual Studio, pick `x64 / Release`, and bu
 ## Run
 
 ```
-GenericAI.App.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
+GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
 ```
 
 | Argument           | Default       | Meaning                                                                           |
@@ -146,7 +146,7 @@ The two axes are orthogonal: `threshold` is "how strong does each pixel change h
 
 `CSharp/` is the legacy single-channel sample wrapper (`SampleWrapper.exe` + `SampleDLL.dll`) preserved as reference code. GenericAI replaces it for production use:
 
-|                         | `CSharp/SampleWrapper.exe`              | `GenericAI.App.exe`                        |
+|                         | `CSharp/SampleWrapper.exe`              | `GenericAI.exe`                            |
 | ----------------------- | ----------------------------------------- | -------------------------------------------- |
 | Channels per process    | 1                                         | N (single-process multi-channel)             |
 | Detector                | Motion only                               | Motion or Person (YOLOX)                     |

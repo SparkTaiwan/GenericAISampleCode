@@ -119,9 +119,9 @@ void MmfReader::Run() {
             // Pool full: do NOT ack (leave status=1). Wrapper never drops
             // frames on its own — the recorder side sees status not flipped
             // and applies its own backpressure (skipping or overwriting its
-            // next frame). Sleep briefly and retry; do not count as drop and
-            // do not emit a timing record (this frame has not entered our
-            // processing pipeline yet).
+            // next frame). Sleep briefly and retry; do not emit a timing
+            // record (this frame has not entered our processing pipeline yet).
+            pool_stall_count_.fetch_add(1, std::memory_order_relaxed);
             std::this_thread::sleep_for(milliseconds(1));
             continue;
         }
@@ -145,6 +145,7 @@ void MmfReader::Run() {
                 slot = nullptr;
                 break;
             }
+            pool_stall_count_.fetch_add(1, std::memory_order_relaxed);
             std::this_thread::sleep_for(milliseconds(1));
         }
         if (slot != nullptr) {

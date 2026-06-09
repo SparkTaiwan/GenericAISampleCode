@@ -100,8 +100,7 @@ private:
     // has_params_ is the durable flag (read lock-free by the scheduler).
     std::mutex start_mtx_;
 
-    std::mutex cb_mtx_;
-    GAI_DetectionCallback callback_ = nullptr;
+    std::atomic<GAI_DetectionCallback> callback_{nullptr};
 };
 
 }  // namespace gai

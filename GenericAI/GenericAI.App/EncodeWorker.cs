@@ -30,43 +30,17 @@ namespace GenericAI.App
             {
                 try
                 {
-                    // Fair round-robin TakeFromAny replacement. .NET's
-                    // BlockingCollection<T>.TakeFromAny always probes from
-                    // index 0 on each wake, so when every channel has frames
-                    // queued the worker only ever drains ch0/ch1 and the
-                    // later channels starve. We track a per-worker cursor
-                    // and try queues in (cursor, cursor+1, ...) order, then
-                    // advance the cursor past whatever we took.
-                    int n = _allEncodeQs.Length;
                     int cursor = 0;
                     while (!ct.IsCancellationRequested)
                     {
-                        RawDetection raw = default(RawDetection);
-                        int idx = -1;
-                        for (int i = 0; i < n; i++)
+                        RawDetection raw;
+                        int idx = RoundRobinTaker.TryTakeRoundRobin(_allEncodeQs, ref cursor, out raw);
+                        if (idx == -1) break;
+                        if (idx == -2)
                         {
-                            int probe = (cursor + i) % n;
-                            if (_allEncodeQs[probe].TryTake(out raw))
-                            {
-                                idx = probe;
-                                cursor = (probe + 1) % n;
-                                break;
-                            }
-                        }
-
-                        if (idx < 0)
-                        {
-                            // All queues empty. Exit if every queue is
-                            // closed (CompleteAdding + drained); otherwise
-                            // wait briefly. WaitOne(1) returns true if ct
-                            // gets cancelled, false on timeout — no try /
-                            // catch needed for cancellation here.
-                            bool allDone = true;
-                            for (int i = 0; i < n; i++)
-                            {
-                                if (!_allEncodeQs[i].IsCompleted) { allDone = false; break; }
-                            }
-                            if (allDone) break;
+                            // All queues empty but some still open. WaitOne(1)
+                            // returns true if ct gets cancelled, false on timeout —
+                            // no try/catch needed for cancellation here.
                             if (ct.WaitHandle.WaitOne(1)) break;
                             continue;
                         }

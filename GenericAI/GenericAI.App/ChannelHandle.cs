@@ -7,6 +7,12 @@ namespace GenericAI.App
     // BlockingCollection<T>.TakeFromAny over the per-channel queues.
     internal sealed class ChannelHandle
     {
+        // cap=5: in simulator runs, stop-stream-to-callback-stop latency (residual buffer drain)
+        // matters more than backpressure absorption. 100 -> 5 cuts post-stop residue from 3-6 s to ~200 ms.
+        // Side effect: any HTTP jitter >150 ms immediately pushes pressure back to the MMF reader and raises RS drops.
+        private const int EncodeQueueCapacity = 5;
+        private const int SendQueueCapacity = 5;
+
         public int Port { get; }
         public ParameterStore Parameters { get; }
         public BlockingCollection<RawDetection> EncodeQ { get; }
@@ -18,11 +24,8 @@ namespace GenericAI.App
             Port = port;
             Parameters = new ParameterStore();
             Listener = new HttpListenerHost(port, Parameters);
-            // cap=5: in simulator runs, stop-stream-to-callback-stop latency (residual buffer drain)
-            // matters more than backpressure absorption. 100 -> 5 cuts post-stop residue from 3-6 s to ~200 ms.
-            // Side effect: any HTTP jitter >150 ms immediately pushes pressure back to the MMF reader and raises RS drops.
-            EncodeQ = new BlockingCollection<RawDetection>(5);
-            SendQ = new BlockingCollection<HttpEnvelope>(5);
+            EncodeQ = new BlockingCollection<RawDetection>(EncodeQueueCapacity);
+            SendQ = new BlockingCollection<HttpEnvelope>(SendQueueCapacity);
         }
 
         public bool StartListener()

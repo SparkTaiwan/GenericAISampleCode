@@ -18,7 +18,7 @@ namespace GenericAI.App
     // below; when false, every Mark/Flush short-circuits at the first line.
     internal sealed class TimingRecorder
     {
-        public const bool Enabled = true;
+        public const bool Enabled = false;
 
         private static readonly TimingRecorder _instance = new TimingRecorder();
         public static TimingRecorder Instance => _instance;
@@ -76,13 +76,13 @@ namespace GenericAI.App
             if (_initialized) return;
             _initialized = true;
 
-#pragma warning disable 162  // CS0162: unreachable when Enabled = true (compile-time switch)
+#pragma warning disable 162  // CS0162: Enabled is a compile-time const, one branch is always unreachable
             if (!Enabled) return;
-#pragma warning restore 162
 
             _enabledRuntime = true;
             _sweeperCts = new CancellationTokenSource();
             _sweeperTask = Task.Run(() => SweeperLoop(_sweeperCts.Token));
+#pragma warning restore 162
         }
 
         public void Shutdown()

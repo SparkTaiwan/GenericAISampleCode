@@ -43,6 +43,12 @@ namespace GenericAI.App
                 return ExitBadArgs;
             }
 
+            // .NET Framework's default per-host outbound connection cap is 2,
+            // so without this every SendWorker beyond the second one would sit
+            // queued inside ServicePoint instead of actually POSTing in parallel.
+            System.Net.ServicePointManager.DefaultConnectionLimit =
+                Math.Max(parsed.SendWorkers * parsed.ChannelCount, 16);
+
             TimeBeginPeriod(1);
             s_timeBeginPeriodSet = true;
 
@@ -232,6 +238,8 @@ namespace GenericAI.App
                         Task.WhenAll(_sendTasks).Wait(TimeSpan.FromSeconds(5));
                 }
                 catch { }
+
+                try { TimingRecorder.Instance.Shutdown(); } catch { }
 
                 if (s_nativeInit)
                 {
