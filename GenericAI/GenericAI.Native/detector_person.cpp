@@ -549,18 +549,9 @@ struct PersonDetector::Impl {
         Nms(proposals, nms_iou, out_boxes);
     }
 
-    // Threshold remap (threshold, sensitivity) 0..100 → conf 0.05..0.90.
-    // Same formula as the legacy single-shot Detect path. Higher threshold
-    // raises the bar; higher sensitivity lowers it.
     float ComputeConfThreshold(const gai::DetectorParams& params) const {
-        int ti = params.threshold;   if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
-        int si = params.sensitivity; if (si < 0) si = 0; else if (si > 100) si = 100;
-        const float t = ti / 100.f;
-        const float s = si / 100.f;
-        float c = 0.5f * t - 0.4f * s + 0.45f;
-        if (c < 0.05f) c = 0.05f;
-        if (c > 0.90f) c = 0.90f;
-        return c;
+        int ti = params.threshold; if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
+        return 0.20f + (ti / 100.f) * 0.50f;
     }
 
     // Applies the bbox→ROI overlap filter; populates ctx.last_detections (kept

@@ -32,7 +32,7 @@ void ParamSnapshot::Apply(const GAI_Settings& s) {
             // allowed to source the (threshold, sensitivity) — otherwise we may
             // pick up tuning from an i whose ROI was dropped, mis-aligning the
             // params with the rects index the detector actually sees.
-            if (!have_first && s.sensitivity[i] > 0) {
+            if (!have_first) {
                 params.threshold   = s.threshold[i];
                 params.sensitivity = s.sensitivity[i];
                 have_first         = true;
