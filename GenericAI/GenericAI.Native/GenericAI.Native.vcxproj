@@ -110,6 +110,7 @@
     <ClInclude Include="roi_geometry.h" />
     <ClInclude Include="shared_detector_scheduler.h" />
     <ClInclude Include="timing_recorder.h" />
+    <ClInclude Include="yolox_geometry.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer_pool.cpp" />
