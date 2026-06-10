@@ -58,7 +58,7 @@ namespace GenericAI.App
             for (int k = 0; k < n; k++) ports[k] = parsed.Port + k;
 
             FileLogger.Init(parsed.Port, parsed.LogDir);
-            FileLogger.Enabled = true;
+            FileLogger.Enabled = false;
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (!parsed.PortFromArgs)
             {
@@ -238,6 +238,23 @@ namespace GenericAI.App
                         Task.WhenAll(_sendTasks).Wait(TimeSpan.FromSeconds(5));
                 }
                 catch { }
+
+                // After workers have joined, drain any I420 buffers that the
+                // EncodeWorker left in EncodeQ when its CTS got cancelled.
+                // Without this, the pool would degrade across a hot restart —
+                // GC still reclaims the byte[], but the pool's internal slot
+                // count does not.
+                if (_channels != null)
+                {
+                    foreach (ChannelHandle h in _channels)
+                    {
+                        RawDetection r;
+                        while (h.EncodeQ.TryTake(out r))
+                        {
+                            try { FrameDispatcher.FramePool.Return(r.FrameI420, clearArray: false); } catch { }
+                        }
+                    }
+                }
 
                 try { TimingRecorder.Instance.Shutdown(); } catch { }
 

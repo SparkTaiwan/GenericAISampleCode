@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
@@ -9,9 +10,11 @@ namespace GenericAI.App
         public int Width;
         public int Height;
         public ulong Timestamp;
-        public byte[] FrameI420;      // managed copy; safe to retain after callback returns
+        public byte[] FrameI420;      // rented from FrameDispatcher.FramePool; EncodeWorker returns it in finally
         public int FrameLength;
-        public List<List<NativeInterop.ROI>> Rois;
+        public NativeInterop.ROI[] RoisFlat;  // length = RoisCount * NodeCount
+        public int RoisCount;
+        public int NodeCount;
         public int Port;              // routing key for shared EncodeWorker/SendWorker pool (spec §7: channel_id == port)
     }
 
@@ -21,10 +24,15 @@ namespace GenericAI.App
     // are undefined behaviour.
     internal sealed class FrameDispatcher
     {
+        // 16 MB 桶上限：4K I420 = 12 MB；下一個 2 的次方桶是 16 MB。
+        // 超過上限（5K/8K 未來情境）會 fall back 為 new byte[]，不出錯、無池化效益。
+        internal const int FramePoolMaxBytes = 16 * 1024 * 1024;
+        internal static readonly ArrayPool<byte> FramePool =
+            ArrayPool<byte>.Create(maxArrayLength: FramePoolMaxBytes, maxArraysPerBucket: 16);
+
         private readonly IReadOnlyDictionary<int, ChannelHandle> _byChannelId;
         private readonly DropCounter _drops;
         private readonly NativeInterop.CallBackFunction _delegate;
-        private readonly int _roiSize = Marshal.SizeOf(typeof(NativeInterop.ROI));
         private GCHandle _delegateHandle;
         private bool _registered;
 
@@ -58,6 +66,10 @@ namespace GenericAI.App
             ulong timestamp,
             IntPtr roisFlat, int roisCount, int nodeCount)
         {
+            // Tracks pool ownership: non-null means we hold a rented buffer
+            // that has not yet been handed to EncodeQ. Set back to null after
+            // EncodeQ.Add succeeds so the finally Return is skipped.
+            byte[] managed = null;
             try
             {
                 if (frameSize <= 0 || frameI420 == IntPtr.Zero || roisCount <= 0 || nodeCount <= 0)
@@ -71,20 +83,17 @@ namespace GenericAI.App
                     return;
                 }
 
-                byte[] managed = new byte[frameSize];
+                // Rent only after channel lookup so the early-exit paths above
+                // never have to remember to Return.
+                managed = FramePool.Rent(frameSize);
                 Marshal.Copy(frameI420, managed, 0, frameSize);
 
-                List<List<NativeInterop.ROI>> grouped = new List<List<NativeInterop.ROI>>(roisCount);
-                for (int i = 0; i < roisCount; i++)
+                int total = roisCount * nodeCount;
+                NativeInterop.ROI[] roiArr = new NativeInterop.ROI[total];
+                unsafe
                 {
-                    List<NativeInterop.ROI> group = new List<NativeInterop.ROI>(nodeCount);
-                    for (int j = 0; j < nodeCount; j++)
-                    {
-                        IntPtr p = IntPtr.Add(roisFlat, (i * nodeCount + j) * _roiSize);
-                        var roi = (NativeInterop.ROI)Marshal.PtrToStructure(p, typeof(NativeInterop.ROI));
-                        group.Add(roi);
-                    }
-                    grouped.Add(group);
+                    NativeInterop.ROI* src = (NativeInterop.ROI*)roisFlat.ToPointer();
+                    for (int k = 0; k < total; k++) roiArr[k] = src[k];
                 }
 
                 RawDetection raw = new RawDetection
@@ -94,7 +103,9 @@ namespace GenericAI.App
                     Timestamp = timestamp,
                     FrameI420 = managed,
                     FrameLength = frameSize,
-                    Rois = grouped,
+                    RoisFlat = roiArr,
+                    RoisCount = roisCount,
+                    NodeCount = nodeCount,
                     Port = channelId,
                 };
 
@@ -104,6 +115,7 @@ namespace GenericAI.App
                 // CompleteAdding (shutdown) wakes a blocked Add with
                 // InvalidOperationException, caught by the outer try/catch.
                 channel.EncodeQ.Add(raw);
+                managed = null;  // ownership transferred to EncodeWorker
 
                 FileLogger.Info($"Detection callback: ch={channelId} size={frameSize} w={width} h={height} rois={roisCount} nodes={nodeCount}");
             }
@@ -112,11 +124,21 @@ namespace GenericAI.App
                 // EncodeQ.CompleteAdding called during shutdown — expected
                 // when an in-flight callback was blocked on Add. Return
                 // silently; no log, no drop counter (this is not a failure).
+                // managed (if rented) returned via finally.
             }
             catch (Exception ex)
             {
                 // Never let an exception unwind into the native caller.
                 try { FileLogger.Error("FrameDispatcher.OnNativeCallback", ex); } catch { }
+            }
+            finally
+            {
+                if (managed != null)
+                {
+                    // Buffer never made it onto EncodeQ; return it here so the
+                    // pool does not degrade.
+                    try { FramePool.Return(managed, clearArray: false); } catch { }
+                }
             }
         }
     }

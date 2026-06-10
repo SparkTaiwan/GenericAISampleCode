@@ -47,51 +47,64 @@ namespace GenericAI.App
 
                         ChannelHandle channel = _channelsByIdx[idx];
 
+                        byte[] buf = raw.FrameI420;
                         try
                         {
-                            int quality = channel.Parameters.JpgQuality;
-                            if (quality <= 0) quality = 50;
-
-                            GCHandle pinned = GCHandle.Alloc(raw.FrameI420, GCHandleType.Pinned);
-                            byte[] jpeg;
                             try
                             {
-                                jpeg = TurboJpegInterop.EncodeI420(
-                                    pinned.AddrOfPinnedObject(), raw.FrameLength,
-                                    raw.Width, raw.Height, quality);
-                            }
-                            finally
-                            {
-                                pinned.Free();
-                            }
+                                int quality = channel.Parameters.JpgQuality;
+                                if (quality <= 0) quality = 50;
 
-                            HttpEnvelope env = new HttpEnvelope
-                            {
-                                version = "1.2",
-                                port_num = raw.Port,
-                                keyframe = Convert.ToBase64String(jpeg),
-                                timestamp = raw.Timestamp,
-                                rois_rects = raw.Rois,
-                            };
+                                GCHandle pinned = GCHandle.Alloc(buf, GCHandleType.Pinned);
+                                byte[] jpeg;
+                                try
+                                {
+                                    jpeg = TurboJpegInterop.EncodeI420(
+                                        pinned.AddrOfPinnedObject(), raw.FrameLength,
+                                        raw.Width, raw.Height, quality);
+                                }
+                                finally
+                                {
+                                    pinned.Free();
+                                }
 
-                            // Blocking Add: pressure backs up to this worker,
-                            // through EncodeQ -> callback -> native pipeline ->
-                            // share memory. Wrapper never drops frames on its own.
-                            // CompleteAdding (shutdown) wakes a blocked Add with
-                            // InvalidOperationException, caught by the outer catch.
-                            channel.SendQ.Add(env);
+                                HttpEnvelope env = new HttpEnvelope
+                                {
+                                    version = "1.2",
+                                    port_num = raw.Port,
+                                    keyframe = Convert.ToBase64String(jpeg),
+                                    timestamp = raw.Timestamp,
+                                    RoisFlat = raw.RoisFlat,
+                                    RoisCount = raw.RoisCount,
+                                    NodeCount = raw.NodeCount,
+                                };
+
+                                // Blocking Add: pressure backs up to this worker,
+                                // through EncodeQ -> callback -> native pipeline ->
+                                // share memory. Wrapper never drops frames on its own.
+                                // CompleteAdding (shutdown) wakes a blocked Add with
+                                // InvalidOperationException, caught by the outer catch.
+                                channel.SendQ.Add(env);
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                // SendQ.CompleteAdding called during shutdown —
+                                // expected when this worker was blocked on Add.
+                                // Exit loop quietly; next TakeFromAny would also
+                                // unblock via the cancellation token.
+                                return;
+                            }
+                            catch (Exception ex)
+                            {
+                                FileLogger.Error("EncodeWorker frame failed", ex);
+                            }
                         }
-                        catch (InvalidOperationException)
+                        finally
                         {
-                            // SendQ.CompleteAdding called during shutdown —
-                            // expected when this worker was blocked on Add.
-                            // Exit loop quietly; next TakeFromAny would also
-                            // unblock via the cancellation token.
-                            return;
-                        }
-                        catch (Exception ex)
-                        {
-                            FileLogger.Error("EncodeWorker frame failed", ex);
+                            // Envelope holds RoisFlat and the base64 string;
+                            // it no longer references the I420 buffer, so the
+                            // pool buffer can be returned here unconditionally.
+                            try { FrameDispatcher.FramePool.Return(buf, clearArray: false); } catch { }
                         }
                     }
                 }

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Newtonsoft.Json;
 
 namespace GenericAI.App
 {
@@ -12,6 +13,37 @@ namespace GenericAI.App
         public int port_num { get; set; }
         public string keyframe { get; set; }
         public ulong timestamp { get; set; }
-        public List<List<NativeInterop.ROI>> rois_rects { get; set; }
+
+        // Flat ROI storage: length = RoisCount * NodeCount. Avoids the per-frame
+        // List<List<ROI>> allocation done previously in the callback hot path.
+        [JsonIgnore]
+        public NativeInterop.ROI[] RoisFlat { get; set; }
+        [JsonIgnore]
+        public int RoisCount { get; set; }
+        [JsonIgnore]
+        public int NodeCount { get; set; }
+
+        // Restores nested [[{x,y},...],...] wire format on serialise without
+        // materialising the outer/inner Lists. Newtonsoft.Json walks
+        // IEnumerable<ROI> via the generic Serialize<T> path so the ROI struct
+        // is not boxed.
+        [JsonProperty("rois_rects")]
+        public IEnumerable<IEnumerable<NativeInterop.ROI>> RoisRects
+        {
+            get
+            {
+                int rois = RoisCount;
+                int nodes = NodeCount;
+                NativeInterop.ROI[] flat = RoisFlat;
+                for (int i = 0; i < rois; i++)
+                    yield return EnumerateGroup(flat, i * nodes, nodes);
+            }
+        }
+
+        private static IEnumerable<NativeInterop.ROI> EnumerateGroup(
+            NativeInterop.ROI[] arr, int baseIdx, int count)
+        {
+            for (int j = 0; j < count; j++) yield return arr[baseIdx + j];
+        }
     }
 }
