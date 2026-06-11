@@ -284,9 +284,23 @@ void SharedDetectorScheduler::PreLoop() {
 
         // Spin-with-sleep instead of blocking push: the queue cap is small
         // and we want to notice running_=false promptly during shutdown.
+        // TryPushRef leaves `item` intact on failure — a by-value TryPush
+        // would move the view out even when the queue is full, and the
+        // retry would push an item with empty roi_rects (ROI filter lost).
+        bool pushed = false;
         while (running_.load(std::memory_order_acquire)) {
-            if (pre_to_gpu_q_.TryPush(std::move(item))) break;
+            if (pre_to_gpu_q_.TryPushRef(item)) {
+                pushed = true;
+                break;
+            }
             std::this_thread::sleep_for(milliseconds(1));
+        }
+        if (!pushed) {
+            // Shutdown while still holding the frame slot — release it so the
+            // channel pool stays balanced. The detector pool slot (dslot) is
+            // left as-is: ClosePipelinedPool has already been called on this
+            // path and the whole pool is being torn down.
+            chan->CommitError(slot);
         }
     }
 }

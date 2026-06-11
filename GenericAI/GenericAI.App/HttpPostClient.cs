@@ -1,8 +1,7 @@
 using System;
 using System.Net.Http;
-using System.Text;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 
 namespace GenericAI.App
 {
@@ -20,17 +19,23 @@ namespace GenericAI.App
             return c;
         }
 
-        public async Task PostAsync(string url, object payload)
+        // Takes pre-serialised UTF-8 JSON so the caller can serialise once per
+        // envelope and reuse the same bytes across retries; ByteArrayContent
+        // also skips the extra UTF-8 copy StringContent would make.
+        public async Task PostAsync(string url, byte[] jsonUtf8)
         {
-            string json = JsonConvert.SerializeObject(payload);
-            using (HttpContent content = new StringContent(json, Encoding.UTF8, "application/json"))
-            using (HttpResponseMessage response = await _client.PostAsync(url, content).ConfigureAwait(false))
+            using (HttpContent content = new ByteArrayContent(jsonUtf8))
             {
-                if (!response.IsSuccessStatusCode)
+                content.Headers.ContentType =
+                    new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+                using (HttpResponseMessage response = await _client.PostAsync(url, content).ConfigureAwait(false))
                 {
-                    string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    throw new HttpRequestException(
-                        $"POST {url} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        throw new HttpRequestException(
+                            $"POST {url} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+                    }
                 }
             }
         }

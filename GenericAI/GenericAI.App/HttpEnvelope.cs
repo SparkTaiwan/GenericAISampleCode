@@ -11,7 +11,10 @@ namespace GenericAI.App
     {
         public string version { get; set; }
         public int port_num { get; set; }
-        public string keyframe { get; set; }
+        // byte[] serialises as a base64 string under Newtonsoft — same wire
+        // format as the previous Convert.ToBase64String path, minus the
+        // intermediate base64 string allocation (LOH-sized for typical JPEGs).
+        public byte[] keyframe { get; set; }
         public ulong timestamp { get; set; }
 
         // Flat ROI storage: length = RoisCount * NodeCount. Avoids the per-frame

@@ -16,6 +16,11 @@
 // process-wide InFlight pool (route B) so PreLoop can pipeline against
 // GpuLoop. ctx still keeps cross-frame per-channel state (stride counter +
 // last detections) because those must not bleed across channels.
+//
+// Pipelined-route thread ownership: two frames of the SAME channel can be in
+// flight at once, so stride_counter is touched only by Phase1Prepare (PreLoop
+// thread) and last_detections only by Phase3Post/ApplyRoiFilter (GpuLoop
+// thread). Do not clear or read either field from the other thread.
 struct PersonDetectorContext : public gai::DetectorContext {
     int stride_counter = 0;
     std::vector<DetectionRect> last_detections;

@@ -126,7 +126,6 @@ namespace GenericAI.App
 
                 ChannelHandle[] channelsByIdx = _channels.ToArray();
                 BlockingCollection<RawDetection>[] allEncodeQs = channelsByIdx.Select(c => c.EncodeQ).ToArray();
-                BlockingCollection<HttpEnvelope>[] allSendQs   = channelsByIdx.Select(c => c.SendQ).ToArray();
 
                 _shutdownCts = new CancellationTokenSource();
 
@@ -140,7 +139,7 @@ namespace GenericAI.App
                 _sendTasks = new List<Task>();
                 for (int i = 0; i < parsed.SendWorkers; i++)
                 {
-                    SendWorker w = new SendWorker(allSendQs, channelsByIdx, postClient, drops);
+                    SendWorker w = new SendWorker(channelsByIdx, postClient, drops);
                     _sendTasks.Add(w.RunAsync(_shutdownCts.Token));
                 }
 

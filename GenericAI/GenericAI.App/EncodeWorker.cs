@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -38,10 +37,12 @@ namespace GenericAI.App
                         if (idx == -1) break;
                         if (idx == -2)
                         {
-                            // All queues empty but some still open. WaitOne(1)
+                            // All queues empty but some still open. WaitOne
                             // returns true if ct gets cancelled, false on timeout —
-                            // no try/catch needed for cancellation here.
-                            if (ct.WaitHandle.WaitOne(1)) break;
+                            // no try/catch needed for cancellation here. 5 ms idle
+                            // poll: a few ms of empty-to-busy wake-up latency in
+                            // exchange for not spinning at 1 kHz per worker.
+                            if (ct.WaitHandle.WaitOne(5)) break;
                             continue;
                         }
 
@@ -55,24 +56,25 @@ namespace GenericAI.App
                                 int quality = channel.Parameters.JpgQuality;
                                 if (quality <= 0) quality = 50;
 
-                                GCHandle pinned = GCHandle.Alloc(buf, GCHandleType.Pinned);
+                                // fixed is cheaper than GCHandle.Alloc(Pinned) —
+                                // no handle-table round trip per frame; the buffer
+                                // only needs to stay pinned for the native call.
                                 byte[] jpeg;
-                                try
+                                unsafe
                                 {
-                                    jpeg = TurboJpegInterop.EncodeI420(
-                                        pinned.AddrOfPinnedObject(), raw.FrameLength,
-                                        raw.Width, raw.Height, quality);
-                                }
-                                finally
-                                {
-                                    pinned.Free();
+                                    fixed (byte* p = buf)
+                                    {
+                                        jpeg = TurboJpegInterop.EncodeI420(
+                                            (IntPtr)p, raw.FrameLength,
+                                            raw.Width, raw.Height, quality);
+                                    }
                                 }
 
                                 HttpEnvelope env = new HttpEnvelope
                                 {
                                     version = "1.2",
                                     port_num = raw.Port,
-                                    keyframe = Convert.ToBase64String(jpeg),
+                                    keyframe = jpeg,
                                     timestamp = raw.Timestamp,
                                     RoisFlat = raw.RoisFlat,
                                     RoisCount = raw.RoisCount,

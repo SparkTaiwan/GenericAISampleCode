@@ -153,15 +153,21 @@ namespace GenericAI.App
             string body;
             try
             {
-                using (StreamReader sr = new StreamReader(req.InputStream, req.ContentEncoding))
-                {
-                    body = await sr.ReadToEndAsync();
-                }
+                // Bounded read: the ContentLength64 check above is only a fast
+                // path — a chunked request reports -1 and would bypass it, so
+                // the cap has to be enforced while streaming too.
+                body = await ReadBodyBoundedAsync(req);
             }
             catch (Exception ex)
             {
                 FileLogger.Error($"SetParameters from {remote} body read failed", ex);
                 await Write(resp, 400, "text/plain", "Bad Request: failed to read body");
+                return;
+            }
+            if (body == null)
+            {
+                FileLogger.Warn($"SetParameters from {remote} rejected: streamed body exceeds {MaxRequestBodyBytes}");
+                await Write(resp, 413, "text/plain", "Payload Too Large");
                 return;
             }
 
@@ -198,6 +204,23 @@ namespace GenericAI.App
             FileLogger.Info($"SetParameters received from {remote} (url={settings.analytics_event_api_url}, " +
                             $"w={settings.image_width}, h={settings.image_height}, " +
                             $"jpg={settings.jpg_compress}, roi_groups={roiGroups})");
+        }
+
+        // Reads the request body up to MaxRequestBodyBytes; returns null when
+        // the cap is exceeded (caller responds 413).
+        private static async Task<string> ReadBodyBoundedAsync(HttpListenerRequest req)
+        {
+            byte[] buffer = new byte[16 * 1024];
+            using (MemoryStream ms = new MemoryStream())
+            {
+                int read;
+                while ((read = await req.InputStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                {
+                    ms.Write(buffer, 0, read);
+                    if (ms.Length > MaxRequestBodyBytes) return null;
+                }
+                return req.ContentEncoding.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+            }
         }
 
         private static NativeInterop.SettingParameters ParseSettings(string body, out int roiGroups)

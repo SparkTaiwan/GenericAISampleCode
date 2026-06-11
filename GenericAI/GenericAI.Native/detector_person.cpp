@@ -40,7 +40,16 @@ ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_DML,
 namespace {
 
 std::wstring Widen(const std::string& s) {
-    return std::wstring(s.begin(), s.end());
+    // Proper ANSI-codepage conversion: the naive char-by-char widening only
+    // works for ASCII and would mangle a model path containing CJK characters.
+    if (s.empty()) return std::wstring();
+    const int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(),
+                                      static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return std::wstring(s.begin(), s.end());
+    std::wstring w(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, s.c_str(), static_cast<int>(s.size()),
+                        &w[0], n);
+    return w;
 }
 
 inline unsigned char ClampU8(int v) {
@@ -61,9 +70,16 @@ inline void YuvToRgb(int Y, int U, int V,
 }
 
 // Preprocess I420 planar YUV -> letterboxed RGB CHW float32 (no normalize).
+// All row-invariant work (sy / uvy / plane row pointers) is hoisted out of
+// the inner loop, and the source-x per content column comes from sx_lut —
+// caller-provided scratch of >= input_w ints, filled here once per frame.
+// Output is bit-identical to the per-pixel formulation (same expressions,
+// same clamp order); this throughput matters because PreLoop's CPU time
+// gates the pipelined fps.
 void PreprocessYoloxI420(const unsigned char* yuv, int orig_w, int orig_h,
                          int input_w, int input_h,
                          const Letterbox& lb,
+                         int* sx_lut,
                          float* out_chw) {
     const unsigned char* Yp = yuv;
     const int uv_w = orig_w / 2;
@@ -78,29 +94,55 @@ void PreprocessYoloxI420(const unsigned char* yuv, int orig_w, int orig_h,
     const int uv_w_minus_1 = uv_w - 1;
     const int uv_h_minus_1 = uv_h - 1;
 
+    // Content columns [x_begin, x_end) in output space; everything outside
+    // is letterbox padding (114).
+    int x_begin = lb.pad_x;
+    if (x_begin < 0) x_begin = 0;
+    int x_end = lb.pad_x + lb.new_w;
+    if (x_end > input_w) x_end = input_w;
+
+    for (int x = x_begin; x < x_end; ++x) {
+        int sx = static_cast<int>((x - lb.pad_x) * inv_scale);
+        if (sx > orig_w_minus_1) sx = orig_w_minus_1;
+        sx_lut[x] = sx;
+    }
+
     for (int y = 0; y < input_h; ++y) {
+        float* rowR = out_chw + y * input_w;
+        float* rowG = rowR + chw_stride;
+        float* rowB = rowG + chw_stride;
+
         const int ry = y - lb.pad_y;
-        for (int x = 0; x < input_w; ++x) {
-            const int rx = x - lb.pad_x;
-            unsigned char r, g, b;
-            if (rx >= 0 && rx < lb.new_w && ry >= 0 && ry < lb.new_h) {
-                int sx = static_cast<int>(rx * inv_scale);
-                int sy = static_cast<int>(ry * inv_scale);
-                if (sx > orig_w_minus_1) sx = orig_w_minus_1;
-                if (sy > orig_h_minus_1) sy = orig_h_minus_1;
-                int uvx = sx >> 1;  if (uvx > uv_w_minus_1) uvx = uv_w_minus_1;
-                int uvy = sy >> 1;  if (uvy > uv_h_minus_1) uvy = uv_h_minus_1;
-                const int Y = Yp[sy * orig_w + sx];
-                const int U = Up[uvy * uv_w + uvx];
-                const int V = Vp[uvy * uv_w + uvx];
-                YuvToRgb(Y, U, V, r, g, b);
-            } else {
-                r = 114; g = 114; b = 114;
+        if (ry < 0 || ry >= lb.new_h) {
+            for (int x = 0; x < input_w; ++x) {
+                rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
             }
-            const int idx = y * input_w + x;
-            out_chw[0 * chw_stride + idx] = static_cast<float>(r);
-            out_chw[1 * chw_stride + idx] = static_cast<float>(g);
-            out_chw[2 * chw_stride + idx] = static_cast<float>(b);
+            continue;
+        }
+
+        int sy = static_cast<int>(ry * inv_scale);
+        if (sy > orig_h_minus_1) sy = orig_h_minus_1;
+        int uvy = sy >> 1;
+        if (uvy > uv_h_minus_1) uvy = uv_h_minus_1;
+        const unsigned char* Yrow = Yp + sy * orig_w;
+        const unsigned char* Urow = Up + uvy * uv_w;
+        const unsigned char* Vrow = Vp + uvy * uv_w;
+
+        for (int x = 0; x < x_begin; ++x) {
+            rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
+        }
+        for (int x = x_begin; x < x_end; ++x) {
+            const int sx = sx_lut[x];
+            int uvx = sx >> 1;
+            if (uvx > uv_w_minus_1) uvx = uv_w_minus_1;
+            unsigned char r, g, b;
+            YuvToRgb(Yrow[sx], Urow[uvx], Vrow[uvx], r, g, b);
+            rowR[x] = static_cast<float>(r);
+            rowG[x] = static_cast<float>(g);
+            rowB[x] = static_cast<float>(b);
+        }
+        for (int x = x_end; x < input_w; ++x) {
+            rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
         }
     }
 }
@@ -162,6 +204,9 @@ struct PersonDetector::Impl {
     Ort::Env env;
     Ort::Session session;
     Ort::AllocatorWithDefaultOptions allocator;
+    // Shared by Warmup and every GpuFrame call; describes the same CPU arena
+    // each time, so build it once instead of per inference.
+    Ort::MemoryInfo mem_info{nullptr};
 
     int input_h = 0;
     int input_w = 0;
@@ -191,6 +236,7 @@ struct PersonDetector::Impl {
     // outputs that live across Phase2→Phase3 on the GpuLoop thread.
     struct InFlight {
         std::vector<float> input_buffer;        // 3 * input_h * input_w floats
+        std::vector<int> sx_lut;                // input_w ints, scratch for PreprocessYoloxI420
         std::vector<Ort::Value> gpu_outputs;    // owned across Phase2→Phase3
         Letterbox lb{};
         float conf_threshold = 0.0f;
@@ -243,6 +289,7 @@ struct PersonDetector::Impl {
     Impl(const std::string& model_path, float iou, int cls, bool try_gpu_arg)
         : env(ORT_LOGGING_LEVEL_WARNING, "PersonDetector"),
           session(nullptr),
+          mem_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)),
           nms_iou(iou),
           target_class(cls)
     {
@@ -255,7 +302,10 @@ struct PersonDetector::Impl {
         // allocates on the inference hot path. Dims are stable across the
         // optional DML→CPU fallback (same model file, same input layout).
         const size_t buf_size = static_cast<size_t>(3) * input_h * input_w;
-        for (auto& s : in_flights) s.input_buffer.assign(buf_size, 0.f);
+        for (auto& s : in_flights) {
+            s.input_buffer.assign(buf_size, 0.f);
+            s.sx_lut.assign(static_cast<size_t>(input_w), 0);
+        }
 
         std::cout << "[AI] Person detector loaded: " << model_path
                   << " (input=" << input_w << "x" << input_h
@@ -382,9 +432,8 @@ struct PersonDetector::Impl {
     void Warmup() {
         std::vector<float> tmp(static_cast<size_t>(3) * input_h * input_w, 0.f);
         const int64_t shape[4] = { 1, 3, input_h, input_w };
-        Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         Ort::Value input = Ort::Value::CreateTensor<float>(
-            mem, tmp.data(), tmp.size(), shape, 4);
+            mem_info, tmp.data(), tmp.size(), shape, 4);
 
         const char* in_names_c[1] = { input_name.c_str() };
         session.Run(Ort::RunOptions{nullptr},
@@ -408,14 +457,13 @@ struct PersonDetector::Impl {
         slot.conf_threshold = conf_threshold;
         slot.lb = ComputeLetterbox(orig_w, orig_h, input_w, input_h);
         PreprocessYoloxI420(yuv, orig_w, orig_h, input_w, input_h,
-                            slot.lb, slot.input_buffer.data());
+                            slot.lb, slot.sx_lut.data(), slot.input_buffer.data());
     }
 
     void GpuFrame(InFlight& slot) {
         const int64_t in_shape[4] = { 1, 3, input_h, input_w };
-        Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         Ort::Value input = Ort::Value::CreateTensor<float>(
-            mem, slot.input_buffer.data(), slot.input_buffer.size(), in_shape, 4);
+            mem_info, slot.input_buffer.data(), slot.input_buffer.size(), in_shape, 4);
         const char* in_names_c[1] = { input_name.c_str() };
         slot.gpu_outputs = session.Run(Ort::RunOptions{nullptr},
                                        in_names_c, &input, 1,
@@ -479,12 +527,16 @@ struct PersonDetector::Impl {
     }
 
     // Applies the bbox→ROI overlap filter; populates ctx.last_detections (kept
-    // boxes) and detected_roi_indices (which ROIs were hit). Sole writer to
-    // ctx.last_detections, must hold no lock (caller serialises per channel).
+    // boxes) and detected_roi_indices (which ROIs were hit). Sole toucher of
+    // ctx.last_detections — including the clear below: in the pipelined route
+    // Phase1Prepare (PreLoop thread) must not clear it, because Phase3Post
+    // (GpuLoop thread) may be writing the previous frame of the same channel
+    // concurrently.
     void ApplyRoiFilter(PersonDetectorContext& ctx,
                         std::vector<DetectionRect>& raw,
                         const ROIRect* roi_rects, int roi_count,
                         std::vector<int>& detected_roi_indices) {
+        ctx.last_detections.clear();
         if (roi_count <= 0 || roi_rects == nullptr) {
             ctx.last_detections = std::move(raw);
         } else {
@@ -583,10 +635,12 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
 int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
                                   const unsigned char* yuv420_frame, int width, int height,
                                   const gai::DetectorParams& params) {
-    // Mirrors Detect's preamble: clear cross-frame outputs, validate inputs,
-    // honour stride decimation. Returns negative codes for shortcuts so the
-    // caller (PreLoop) can route the queue item correctly.
-    ctx.last_detections.clear();
+    // Mirrors Detect's preamble: validate inputs, honour stride decimation.
+    // Returns negative codes for shortcuts so the caller (PreLoop) can route
+    // the queue item correctly. ctx.last_detections is NOT cleared here —
+    // this runs on the PreLoop thread while Phase3Post (GpuLoop thread) may
+    // still be writing it for the previous frame of the same channel;
+    // ApplyRoiFilter clears it on the consumer side instead.
     if (yuv420_frame == nullptr || width <= 0 || height <= 0) return -1;
 
     if (++ctx.stride_counter < m_impl->stride_n) return -1;

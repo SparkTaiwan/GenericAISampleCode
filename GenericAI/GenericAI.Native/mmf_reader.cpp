@@ -105,10 +105,14 @@ void MmfReader::Run() {
         }
 
         const int size = data->image_size;
-        // Upper bound is the pool slot capacity (sized to the stream resolution),
-        // not the legacy MMF struct size — a frame larger than a slot would
-        // overflow the memcpy below, so drop it.
-        if (size <= 0 || static_cast<std::size_t>(size) > pool_.SlotCapacity()) {
+        // Two upper bounds: the pool slot capacity (sized to the stream
+        // resolution) guards the memcpy destination, and kMmfFrameCapacity
+        // guards the source — when the configured resolution makes slots
+        // bigger than the fixed MMF image_data area (e.g. 4K), a corrupt
+        // image_size would otherwise read past the mapped view.
+        if (size <= 0 ||
+            static_cast<std::size_t>(size) > kMmfFrameCapacity ||
+            static_cast<std::size_t>(size) > pool_.SlotCapacity()) {
             // Corrupt / oversized frame — ack so recorder doesn't stall, keep going.
             data->image_status = 2;
             continue;

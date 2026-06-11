@@ -19,7 +19,9 @@ namespace GenericAI.App
         {
             lock (_lock)
             {
-                if (jpgCompress > 0) _jpgQuality = jpgCompress;
+                // Clamp to turbojpeg's valid 1..100 range — an out-of-range
+                // quality would make tjCompressFromYUV fail on every frame.
+                if (jpgCompress > 0) _jpgQuality = System.Math.Min(jpgCompress, 100);
                 _url = url ?? "";
             }
         }
