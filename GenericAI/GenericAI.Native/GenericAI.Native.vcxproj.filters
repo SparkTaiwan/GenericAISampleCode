@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="abi">
+      <UniqueIdentifier>{1bcc4122-57d2-43f7-a746-efaee39c56ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="detectors">
+      <UniqueIdentifier>{371ef00e-953d-4962-a609-5469696f44fe}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="pipeline">
+      <UniqueIdentifier>{c1a25ced-2723-45d3-9669-c5dc6c0cca85}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="io">
+      <UniqueIdentifier>{29e355a5-12bb-4398-85ef-1de4e0bc56c4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="diagnostics">
+      <UniqueIdentifier>{975289bf-aed3-4338-a1b0-82d6b994e925}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="gai_abi.h">
+      <Filter>abi</Filter>
+    </ClInclude>
+    <ClInclude Include="gai_config.h">
+      <Filter>abi</Filter>
+    </ClInclude>
+    <ClInclude Include="idetector.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="detector_factory.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="detector_motion.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="detector_person.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="roi_geometry.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="yolox_geometry.h">
+      <Filter>detectors</Filter>
+    </ClInclude>
+    <ClInclude Include="shared_detector_scheduler.h">
+      <Filter>pipeline</Filter>
+    </ClInclude>
+    <ClInclude Include="channel_pipeline.h">
+      <Filter>pipeline</Filter>
+    </ClInclude>
+    <ClInclude Include="bounded_queue.h">
+      <Filter>pipeline</Filter>
+    </ClInclude>
+    <ClInclude Include="buffer_pool.h">
+      <Filter>pipeline</Filter>
+    </ClInclude>
+    <ClInclude Include="mmf_reader.h">
+      <Filter>io</Filter>
+    </ClInclude>
+    <ClInclude Include="param_snapshot.h">
+      <Filter>io</Filter>
+    </ClInclude>
+    <ClInclude Include="timing_recorder.h">
+      <Filter>diagnostics</Filter>
+    </ClInclude>
+    <ClInclude Include="framework.h" />
+    <ClInclude Include="pch.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="exports.cpp">
+      <Filter>abi</Filter>
+    </ClCompile>
+    <ClCompile Include="detector_factory.cpp">
+      <Filter>detectors</Filter>
+    </ClCompile>
+    <ClCompile Include="detector_motion.cpp">
+      <Filter>detectors</Filter>
+    </ClCompile>
+    <ClCompile Include="detector_person.cpp">
+      <Filter>detectors</Filter>
+    </ClCompile>
+    <ClCompile Include="shared_detector_scheduler.cpp">
+      <Filter>pipeline</Filter>
+    </ClCompile>
+    <ClCompile Include="channel_pipeline.cpp">
+      <Filter>pipeline</Filter>
+    </ClCompile>
+    <ClCompile Include="buffer_pool.cpp">
+      <Filter>pipeline</Filter>
+    </ClCompile>
+    <ClCompile Include="mmf_reader.cpp">
+      <Filter>io</Filter>
+    </ClCompile>
+    <ClCompile Include="param_snapshot.cpp">
+      <Filter>io</Filter>
+    </ClCompile>
+    <ClCompile Include="timing_recorder.cpp">
+      <Filter>diagnostics</Filter>
+    </ClCompile>
+    <ClCompile Include="pch.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+</Project>

@@ -39,7 +39,7 @@ msbuild GenericAI/GenericAI.sln /p:Configuration=Release /p:Platform=x64
 ## 執行
 
 ```
-GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
+GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>]
 ```
 
 | 參數 | 預設 | 意義 |
@@ -48,7 +48,6 @@ GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=
 | `channel_count` | `1` | 本 process 服務的 channel 數量。不設上限，`<1` 視為非法。 |
 | `encode_workers` | `2` | JPEG encode worker thread 數（process-wide pool，跨 channel 共用）。 |
 | `send_workers` | `2` | HTTP POST worker thread 數（process-wide pool）。 |
-| `log` | `""`（自動） | 覆寫 log 目錄。預設為 `D:\SLog-<basePort>\GenericAI.log`。 |
 
 Exit code：
 
@@ -61,6 +60,24 @@ Exit code：
 | `4` | Native init 失敗（detector / ONNX session / MMF） |
 
 正式部署一律明示帶 `port=`。不帶任何參數直接執行時走預設 `port=51000`（「Debug Run」模式），方便在 Visual Studio 直接按 F5。
+
+## 日誌與診斷
+
+所有開關都是編譯期常數：改一行、rebuild、重啟 exe。全部關閉（預設）時，console 輸出與舊版 `CSharp/SampleWrapper.exe` 一致，也不會建立任何 log 目錄。
+
+| 開關 | 位置 | 預設 | 效果 |
+| --- | --- | --- | --- |
+| `FileLogger.Enabled` | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR 檔案日誌。 |
+| `TimingRecorder.Enabled` | `GenericAI.App/Diagnostics/TimingRecorder.cs` | `false` | C# 側 per-frame timing 輸出（console + `timing-<basePort>.log`），同時打開 GenericAI 特有的 verbose console 訊息。 |
+| `kEnableTimingLog` | `GenericAI.Native/gai_config.h` | `false` | Native 側 per-frame timing 輸出與 native 端的資訊性 console 訊息。 |
+
+Log 檔位於 `%ProgramData%\Spark\GenericAI\Logs\`：
+
+- `GenericAI-<basePort>.log` — INFO / WARN / ERROR
+- `error-<basePort>.log` — ERROR 另存一份，方便快速排查
+- `timing-<basePort>.log` — C# `TimingRecorder` 的 per-frame timing 輸出
+
+寫入為非同步：producer 只把訊息塞進 bounded queue，由單一背景 thread 批次落盤，所以日誌絕不會卡住 frame 路徑。檔案 5 MB 輪替、保留 3 份備份；檔名帶 base port，多個 instance 並行時不會搶同一個檔案。
 
 ## 對外契約
 
@@ -96,7 +113,7 @@ Process 內所有 channel 共用同一支 detector instance，透過 `SharedDete
 
 ### Person — YOLOX-M FP16 ONNX
 
-- DirectML EP，失敗時自動 fallback 到 CPU。實際載入的 EP 在啟動時印 log（`EP=DirectML(0)` 或 `EP=CPU`），也能透過 `GAI_GetBackend` 讀回。
+- DirectML EP，失敗時自動 fallback 到 CPU。實際載入的 EP 可透過 `GAI_GetBackend` 讀回；timing/verbose 開關打開時，啟動也會在 console 印出（`EP=DirectML(0)` 或 `EP=CPU`）。
 - Letterbox 預處理 → ONNX 推論 → score 過濾 + NMS → ROI overlap 過濾。
 - Per-channel ROI 清單來自 `POST /SetParameters`。
 
@@ -164,15 +181,25 @@ GenericAI/
     Program.cs              進入點 + cleanup 編排
     CommandLineArgs.cs      cmdline 解析
     ChannelHandle.cs        per-channel 狀態（listener + MMF reader）
-    NativeInterop.cs        GAI_* exports 的 P/Invoke 表面
-    FrameDispatcher.cs      detector callback → channel router
-    EncodeWorker.cs         JPEG encode worker（turbojpeg）
-    SendWorker.cs           HTTP POST worker
-    HttpListenerHost.cs     /Alive、/GetLicense、/SetParameters
-    ParameterStore.cs       來自 /SetParameters 的 process-wide url + jpgQuality 快取
-    FileLogger.cs           檔案 logger（D:\SLog-<basePort>）
-    TimingRecorder.cs       可選的 timing instrumentation
-  GenericAI.Native/
+    Http/
+      HttpListenerHost.cs   /Alive、/GetLicense、/SetParameters
+      HttpPostClient.cs     detection callback 共用的 HttpClient
+      HttpEnvelope.cs       v1.2 callback JSON payload
+      ParameterStore.cs     來自 /SetParameters 的 process-wide url + jpgQuality 快取
+    Pipeline/
+      FrameDispatcher.cs    detector callback → channel router
+      EncodeWorker.cs       JPEG encode worker（turbojpeg）
+      SendWorker.cs         HTTP POST worker
+      RoundRobinTaker.cs    worker pool 共用的公平多佇列取出器
+      DropCounter.cs        各 pipeline 階段的 drop 計數
+    Interop/
+      NativeInterop.cs      GAI_* exports 的 P/Invoke 表面
+      TurboJpegInterop.cs   turbojpeg 的 P/Invoke 表面
+      DetectorType.cs       對應 native DetectorKind 的 managed 列舉
+    Diagnostics/
+      FileLogger.cs         非同步檔案 logger（%ProgramData%\Spark\GenericAI\Logs）
+      TimingRecorder.cs     可選的 timing instrumentation
+  GenericAI.Native/         磁碟上維持扁平；VS 內以 .vcxproj.filters 分組
     exports.cpp             GAI_* C ABI
     shared_detector_scheduler.{h,cpp}   單 detector + N-channel 排程
     channel_pipeline.{h,cpp}            per-channel work queue

@@ -38,7 +38,7 @@ Or open `GenericAI/GenericAI.sln` in Visual Studio, pick `x64 / Release`, and bu
 ## Run
 
 ```
-GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>] [log=<dir>]
+GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=<S>]
 ```
 
 | Argument           | Default       | Meaning                                                                           |
@@ -47,7 +47,6 @@ GenericAI.exe [port=<X>] [channel_count=<N>] [encode_workers=<E>] [send_workers=
 | `channel_count`  | `1`         | Number of channels served by this process. No upper bound;`<1` is rejected.     |
 | `encode_workers` | `2`         | JPEG-encode worker threads (process-wide pool, shared across channels).           |
 | `send_workers`   | `2`         | HTTP-POST worker threads (process-wide pool).                                     |
-| `log`            | `""` (auto) | Override the log directory. Defaults to `D:\SLog-<basePort>\GenericAI.log`.     |
 
 Exit codes:
 
@@ -60,6 +59,24 @@ Exit codes:
 | `4` | Native init failed (detector / ONNX session / MMF) |
 
 Production-side spawn always passes `port=` explicitly. Running the exe without args picks `port=51000` ("Debug Run" mode) so you can press F5 from Visual Studio.
+
+## Logging & Diagnostics
+
+All switches are compile-time constants: edit one line, rebuild, restart the exe. With everything off (the default) the console output matches the legacy `CSharp/SampleWrapper.exe` and no log directory is ever created.
+
+| Switch                   | Location                                    | Default   | Effect                                                                                                          |
+| ------------------------ | ------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------- |
+| `FileLogger.Enabled`   | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR file logging.                                                                               |
+| `TimingRecorder.Enabled` | `GenericAI.App/Diagnostics/TimingRecorder.cs` | `false` | C#-side per-frame timing lines (console + `timing-<basePort>.log`) and the GenericAI-specific verbose console lines. |
+| `kEnableTimingLog`     | `GenericAI.Native/gai_config.h`           | `false` | Native-side per-frame timing lines and the native informational console lines.                                  |
+
+Log files land in `%ProgramData%\Spark\GenericAI\Logs\`:
+
+- `GenericAI-<basePort>.log` — INFO / WARN / ERROR
+- `error-<basePort>.log` — ERROR duplicated for quick triage
+- `timing-<basePort>.log` — per-frame timing lines from the C# `TimingRecorder`
+
+Writing is asynchronous: producers enqueue into a bounded queue and a single background thread drains it, so logging never blocks the frame path. Files rotate at 5 MB with 3 backups, and names carry the base port so concurrent instances never contend for the same file.
 
 ## Wire Protocol
 
@@ -95,7 +112,7 @@ A single detector instance is shared across all channels via `SharedDetectorSche
 
 ### Person — YOLOX-M FP16 ONNX
 
-- DirectML EP with CPU fallback. Actual EP logged at startup (`EP=DirectML(0)` or `EP=CPU`) and readable via `GAI_GetBackend`.
+- DirectML EP with CPU fallback. The actual EP is readable via `GAI_GetBackend`; with the timing/verbose switch on it is also printed at startup (`EP=DirectML(0)` or `EP=CPU`).
 - Letterbox preprocess → ONNX inference → score filter + NMS → ROI overlap filter.
 - Per-channel ROI list comes from `POST /SetParameters`.
 
@@ -164,15 +181,25 @@ GenericAI/
     Program.cs              entry point + cleanup orchestration
     CommandLineArgs.cs      cmdline parse
     ChannelHandle.cs        per-channel state (listener + MMF reader)
-    NativeInterop.cs        P/Invoke surface for GAI_* exports
-    FrameDispatcher.cs      detector callback → channel router
-    EncodeWorker.cs         JPEG encode worker (turbojpeg)
-    SendWorker.cs           HTTP POST worker
-    HttpListenerHost.cs     /Alive, /GetLicense, /SetParameters
-    ParameterStore.cs       process-wide url + jpgQuality cache from /SetParameters
-    FileLogger.cs           file logger (D:\SLog-<basePort>)
-    TimingRecorder.cs       optional timing instrumentation
-  GenericAI.Native/
+    Http/
+      HttpListenerHost.cs   /Alive, /GetLicense, /SetParameters
+      HttpPostClient.cs     shared HttpClient for detection callbacks
+      HttpEnvelope.cs       v1.2 callback JSON payload
+      ParameterStore.cs     process-wide url + jpgQuality cache from /SetParameters
+    Pipeline/
+      FrameDispatcher.cs    detector callback → channel router
+      EncodeWorker.cs       JPEG encode worker (turbojpeg)
+      SendWorker.cs         HTTP POST worker
+      RoundRobinTaker.cs    fair multi-queue taker for the worker pools
+      DropCounter.cs        per-stage drop counters
+    Interop/
+      NativeInterop.cs      P/Invoke surface for GAI_* exports
+      TurboJpegInterop.cs   P/Invoke surface for turbojpeg
+      DetectorType.cs       managed mirror of the native DetectorKind
+    Diagnostics/
+      FileLogger.cs         async file logger (%ProgramData%\Spark\GenericAI\Logs)
+      TimingRecorder.cs     optional timing instrumentation
+  GenericAI.Native/         flat on disk; grouped in VS via .vcxproj.filters
     exports.cpp             GAI_* C ABI
     shared_detector_scheduler.{h,cpp}   shared-detector + N-channel scheduling
     channel_pipeline.{h,cpp}            per-channel work queue

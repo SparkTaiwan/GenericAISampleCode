@@ -50,21 +50,21 @@
   <ItemGroup>
     <Compile Include="ChannelHandle.cs" />
     <Compile Include="CommandLineArgs.cs" />
-    <Compile Include="DetectorType.cs" />
-    <Compile Include="DropCounter.cs" />
-    <Compile Include="EncodeWorker.cs" />
-    <Compile Include="FileLogger.cs" />
-    <Compile Include="FrameDispatcher.cs" />
-    <Compile Include="HttpEnvelope.cs" />
-    <Compile Include="HttpListenerHost.cs" />
-    <Compile Include="HttpPostClient.cs" />
-    <Compile Include="NativeInterop.cs" />
-    <Compile Include="ParameterStore.cs" />
     <Compile Include="Program.cs" />
-    <Compile Include="RoundRobinTaker.cs" />
-    <Compile Include="SendWorker.cs" />
-    <Compile Include="TimingRecorder.cs" />
-    <Compile Include="TurboJpegInterop.cs" />
+    <Compile Include="Diagnostics\FileLogger.cs" />
+    <Compile Include="Diagnostics\TimingRecorder.cs" />
+    <Compile Include="Http\HttpEnvelope.cs" />
+    <Compile Include="Http\HttpListenerHost.cs" />
+    <Compile Include="Http\HttpPostClient.cs" />
+    <Compile Include="Http\ParameterStore.cs" />
+    <Compile Include="Interop\DetectorType.cs" />
+    <Compile Include="Interop\NativeInterop.cs" />
+    <Compile Include="Interop\TurboJpegInterop.cs" />
+    <Compile Include="Pipeline\DropCounter.cs" />
+    <Compile Include="Pipeline\EncodeWorker.cs" />
+    <Compile Include="Pipeline\FrameDispatcher.cs" />
+    <Compile Include="Pipeline\RoundRobinTaker.cs" />
+    <Compile Include="Pipeline\SendWorker.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
