@@ -84,13 +84,22 @@ namespace GenericAI.App
                             HttpEnvelope env;
                             if (!channel.SendQ.TryTake(out env)) continue;
 
+                            TimingRecorder.Instance.MarkSendQueueOut(env.timestamp);
+
                             // Serialise once per envelope — the JSON (base64
                             // keyframe included) is the largest allocation on
                             // this path, and the same bytes are reused across
                             // retries via the parking queue.
                             byte[] payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(env));
-                            if (!await TrySendOnceAsync(url, payload, channel.Port, ct).ConfigureAwait(false))
+                            if (await TrySendOnceAsync(url, payload, channel.Port, ct).ConfigureAwait(false))
                             {
+                                TimingRecorder.Instance.Flush(env.timestamp, TimingRecorder.FrameState.Ok);
+                            }
+                            else
+                            {
+                                // Parked payloads lose their timestamp (bytes
+                                // only), so a late retry success shows up as
+                                // incomplete_swept rather than OK.
                                 channel.ParkSend(payload, RetryBackoff);
                             }
                             worked = idx;
@@ -147,6 +156,7 @@ namespace GenericAI.App
                 // Transient or persistent HTTP failure (5s client timeout,
                 // refused connection, 5xx, DNS, ...). Warn (not Error) since
                 // parking + retry is the expected behaviour.
+                Console.WriteLine($"Response: {ex.Message}");
                 FileLogger.Warn($"SendWorker POST failed (ch={port}), parked for retry: {ex.Message}");
                 return false;
             }

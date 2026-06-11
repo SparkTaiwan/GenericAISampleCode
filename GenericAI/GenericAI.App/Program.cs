@@ -36,6 +36,8 @@ namespace GenericAI.App
 
         public static async Task<int> Main(string[] args)
         {
+            Console.WriteLine(CommandLineArgs.Usage());
+
             if (!CommandLineArgs.TryParse(args, out CommandLineArgs parsed, out string err))
             {
                 Console.Error.WriteLine($"Bad args: {err}");
@@ -57,14 +59,17 @@ namespace GenericAI.App
             // Consecutive sample ports (aligns with spark.recorder's getExeServerPort() + index scheme).
             for (int k = 0; k < n; k++) ports[k] = parsed.Port + k;
 
-            FileLogger.Init(parsed.Port, parsed.LogDir);
-            FileLogger.Enabled = false;
+            FileLogger.Init(parsed.Port);
+            TimingRecorder.Instance.Init(parsed.Port);
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
-            if (!parsed.PortFromArgs)
+            if (parsed.PortFromArgs)
             {
-                string msg = $"port not provided in args; using default {CommandLineArgs.DefaultPort} (Debug Run mode)";
-                Console.WriteLine($"[WARN] {msg}");
-                FileLogger.Warn(msg);
+                Console.WriteLine($"Port number: {parsed.Port}");
+            }
+            else
+            {
+                Console.WriteLine($"Invalid Input. Use default {CommandLineArgs.DefaultPort}");
+                FileLogger.Warn($"port not provided in args; using default {CommandLineArgs.DefaultPort} (Debug Run mode)");
             }
 
             Console.Title = $"GenericAI ports:{string.Join(",", ports)}";
@@ -88,6 +93,7 @@ namespace GenericAI.App
                     ChannelHandle h = new ChannelHandle(p);
                     _channels.Add(h);
                     _byChannelId[p] = h;
+                    Console.WriteLine($"httpServerUrl: http://127.0.0.1:{p}/");
                 }
 
                 foreach (ChannelHandle h in _channels)
@@ -115,7 +121,7 @@ namespace GenericAI.App
                 NativeInterop.GAI_GetBackend(backendBuf, backendBuf.Capacity);
                 string backend = backendBuf.ToString();
                 if (string.IsNullOrEmpty(backend)) backend = "<unknown>";
-                Console.WriteLine($"[INFO] detector backend = {backend}");
+                VerboseConsole($"[INFO] detector backend = {backend}");
                 FileLogger.Info($"detector backend = {backend}");
 
                 DropCounter    drops      = new DropCounter();
@@ -123,6 +129,7 @@ namespace GenericAI.App
 
                 _dispatcher = new FrameDispatcher(_byChannelId, drops);
                 _dispatcher.Register();
+                Console.WriteLine("register Callback");
 
                 ChannelHandle[] channelsByIdx = _channels.ToArray();
                 BlockingCollection<RawDetection>[] allEncodeQs = channelsByIdx.Select(c => c.EncodeQ).ToArray();
@@ -145,17 +152,16 @@ namespace GenericAI.App
 
                 _ = Task.Run(() => DropReporterAsync(drops, _shutdownCts.Token));
 
-                Console.WriteLine();
+                VerboseConsole("");
                 foreach (ChannelHandle h in _channels)
                 {
-                    Console.WriteLine($"  HTTP: http://127.0.0.1:{h.Port}/");
-                    Console.WriteLine($"  MMF:  ChannelFrame_{h.Port}");
+                    VerboseConsole($"  MMF:  ChannelFrame_{h.Port}");
                 }
-                Console.WriteLine($"  Workers: encode={parsed.EncodeWorkers}, send={parsed.SendWorkers}");
-                Console.WriteLine();
-                Console.WriteLine("  [Ready] Waiting for /SetParameters and frames...");
-                Console.WriteLine("  Press Ctrl+C to stop.");
-                Console.WriteLine();
+                VerboseConsole($"  Workers: encode={parsed.EncodeWorkers}, send={parsed.SendWorkers}");
+                VerboseConsole("");
+                VerboseConsole("  [Ready] Waiting for /SetParameters and frames...");
+                VerboseConsole("  Press Ctrl+C to stop.");
+                VerboseConsole("");
                 FileLogger.Info($"Ready on ports {string.Join(",", ports)}");
 
                 await Task.WhenAll(_channels.Select(c => c.Listener.RunAsync(_shutdownCts.Token))).ConfigureAwait(false);
@@ -270,8 +276,19 @@ namespace GenericAI.App
                 }
 
                 FileLogger.Info("Cleanup end");
+                FileLogger.Shutdown();
             }
             catch { }
+        }
+
+        // GenericAI-specific console lines beyond the CSharp sample's set.
+        // Gated by the timing/verbose switch so the default console output
+        // matches the sample exactly.
+        private static void VerboseConsole(string line)
+        {
+#pragma warning disable 162  // CS0162: TimingRecorder.Enabled is a compile-time const
+            if (TimingRecorder.Enabled) Console.WriteLine(line);
+#pragma warning restore 162
         }
     }
 }

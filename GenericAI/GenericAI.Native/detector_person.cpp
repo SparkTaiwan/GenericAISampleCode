@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "detector_person.h"
+#include "gai_config.h"
 #include "timing_recorder.h"
 
 #include <onnxruntime_cxx_api.h>
@@ -307,9 +308,11 @@ struct PersonDetector::Impl {
             s.sx_lut.assign(static_cast<size_t>(input_w), 0);
         }
 
-        std::cout << "[AI] Person detector loaded: " << model_path
-                  << " (input=" << input_w << "x" << input_h
-                  << ", EP=" << backend_label << ")" << std::endl;
+        if (gai::kEnableTimingLog) {
+            std::cout << "[AI] Person detector loaded: " << model_path
+                      << " (input=" << input_w << "x" << input_h
+                      << ", EP=" << backend_label << ")" << std::endl;
+        }
 
         try {
             Warmup();
@@ -321,7 +324,9 @@ struct PersonDetector::Impl {
                 session = Ort::Session(env, wpath.c_str(), cpu_opts);
                 backend_label = "CPU";
                 LoadMetadata(model_path);
-                std::cout << "[AI] Person detector now running on EP=CPU." << std::endl;
+                if (gai::kEnableTimingLog) {
+                    std::cout << "[AI] Person detector now running on EP=CPU." << std::endl;
+                }
                 Warmup();
             } else {
                 throw;
@@ -458,6 +463,7 @@ struct PersonDetector::Impl {
         slot.lb = ComputeLetterbox(orig_w, orig_h, input_w, input_h);
         PreprocessYoloxI420(yuv, orig_w, orig_h, input_w, input_h,
                             slot.lb, slot.sx_lut.data(), slot.input_buffer.data());
+        if (gai::kEnableTimingLog) gai::TimingRecorder::Instance().MarkDetectPreDone();
     }
 
     void GpuFrame(InFlight& slot) {
@@ -468,6 +474,7 @@ struct PersonDetector::Impl {
         slot.gpu_outputs = session.Run(Ort::RunOptions{nullptr},
                                        in_names_c, &input, 1,
                                        output_names_c.data(), output_names_c.size());
+        if (gai::kEnableTimingLog) gai::TimingRecorder::Instance().MarkDetectGpuDone();
     }
 
     void PostFrame(InFlight& slot, std::vector<DetectionRect>& out_boxes) {
@@ -624,9 +631,11 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
 
     m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, detected_roi_indices);
 
-    if (!ctx.last_detections.empty()) {
-        std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
-                  << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+    if (gai::kEnableTimingLog) {
+        if (!ctx.last_detections.empty()) {
+            std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
+                      << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+        }
     }
 
     return static_cast<int>(ctx.last_detections.size());
@@ -697,9 +706,11 @@ int PersonDetector::Phase3Post(PersonDetectorContext& ctx, int detector_slot,
 
     m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, detected_roi_indices);
 
-    if (!ctx.last_detections.empty()) {
-        std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
-                  << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+    if (gai::kEnableTimingLog) {
+        if (!ctx.last_detections.empty()) {
+            std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
+                      << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+        }
     }
     return static_cast<int>(ctx.last_detections.size());
 }

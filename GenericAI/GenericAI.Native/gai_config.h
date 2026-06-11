@@ -20,13 +20,19 @@ constexpr const char* kDefaultModelPath = "models/yolo.onnx";
 //  - false -> force CPU, never attempt GPU
 // Switching steps are the same as kDetectorKind: edit one line -> rebuild -> restart the exe.
 // To check the current EP after startup: see the console "[AI] Person detector loaded: ... EP=..."
-// or the "detector backend = ..." line in D:\SLog-<port>\GenericAI.log.
+// or the "detector backend = ..." line in
+// %ProgramData%\Spark\GenericAI\Logs\GenericAI-<port>.log.
 constexpr bool kPreferGpu = true;
 
-// === Per-frame timing log (temporary Step 10/11 instrumentation) ===
-//  - true  -> TimingRecorder writes one line per frame to D:\SLog-<port>\timing.native.log
-//  - false -> all TimingRecorder Mark/Flush calls short-circuit; zero log file produced
-// Matching switch on the C# side: TimingRecorder.Enabled in TimingRecorder.cs.
+// === Per-frame timing log / verbose console ===
+//  - true  -> TimingRecorder prints one [TIMING] line per frame to the
+//             console, and the native informational lines ([AI] ...,
+//             [PersonDetector] ..., [channel N] ...) are printed too.
+//  - false -> all TimingRecorder Mark/Flush call sites compile away and the
+//             informational lines are suppressed, so the console carries only
+//             the lines the CSharp sample prints (plus std::cerr errors).
+// Matching switch on the C# side: TimingRecorder.Enabled in TimingRecorder.cs
+// (that one also writes timing-<port>.log via FileLogger).
 constexpr bool kEnableTimingLog = false;
 
 // === Pipelined inference (route B) ===

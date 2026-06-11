@@ -1,5 +1,3 @@
-using System;
-
 namespace GenericAI.App
 {
     internal sealed class CommandLineArgs
@@ -14,7 +12,6 @@ namespace GenericAI.App
 
         public int Port { get; private set; } = DefaultPort;
         public bool PortFromArgs { get; private set; }
-        public string LogDir { get; private set; } = "";
         public int ChannelCount { get; private set; } = 1;
         public int EncodeWorkers { get; private set; } = 2;
         public int SendWorkers { get; private set; } = 2;
@@ -47,10 +44,6 @@ namespace GenericAI.App
                         }
                         parsed.Port = p;
                         parsed.PortFromArgs = true;
-                        break;
-
-                    case "log":
-                        parsed.LogDir = val;
                         break;
 
                     case "channel_count":
@@ -91,7 +84,7 @@ namespace GenericAI.App
 
         public static string Usage()
         {
-            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>] [log=<dir>]" +
+            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>]" +
                    " [encode_workers=<N>] [send_workers=<M>]" +
                    "\n(detector type is a compile-time flag in GenericAI.Native/gai_config.h)";
         }

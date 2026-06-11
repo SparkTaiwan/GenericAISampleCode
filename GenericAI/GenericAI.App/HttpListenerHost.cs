@@ -47,6 +47,7 @@ namespace GenericAI.App
             try
             {
                 _listener.Start();
+                Console.WriteLine("HTTP Server started.");
                 FileLogger.Info($"HTTP listener started on port {_port}");
                 return true;
             }
@@ -61,6 +62,7 @@ namespace GenericAI.App
         {
             try { _listener.Stop(); } catch { }
             try { _listener.Close(); } catch { }
+            Console.WriteLine("HTTP Server stopped.");
         }
 
         public async Task RunAsync(CancellationToken ct)
