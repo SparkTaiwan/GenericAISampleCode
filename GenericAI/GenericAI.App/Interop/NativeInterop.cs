@@ -44,6 +44,11 @@ namespace GenericAI.App
             ulong timestamp,
             IntPtr roisFlat, int roisCount, int nodeCount);
 
+        // Native diagnostic line for the file log. level: 0 info, 1 warn,
+        // 2 error; message is ANSI and only valid during the call.
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        public delegate void LogCallbackFunction(int level, IntPtr message);
+
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_InitializeChannels(int[] ports, int count);
 
@@ -52,6 +57,9 @@ namespace GenericAI.App
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GAI_RegisterCallback(CallBackFunction cb);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void GAI_RegisterLogCallback(LogCallbackFunction cb);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_Deinitialize();

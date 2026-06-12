@@ -28,6 +28,10 @@ namespace GenericAI.App
         private static bool s_nativeInit;
 
         private static FrameDispatcher _dispatcher;
+        // Pinned like FrameDispatcher's detection delegate: native threads
+        // hold the function pointer until GAI_RegisterLogCallback(null).
+        private static NativeInterop.LogCallbackFunction _nativeLogDelegate;
+        private static GCHandle _nativeLogHandle;
         private static List<ChannelHandle> _channels;
         private static Dictionary<int, ChannelHandle> _byChannelId;
         private static List<Task> _encodeTasks;
@@ -36,12 +40,12 @@ namespace GenericAI.App
 
         public static async Task<int> Main(string[] args)
         {
-            Console.WriteLine(CommandLineArgs.Usage());
+            ConsoleLog.WriteLine(CommandLineArgs.Usage());
 
             if (!CommandLineArgs.TryParse(args, out CommandLineArgs parsed, out string err))
             {
-                Console.Error.WriteLine($"Bad args: {err}");
-                Console.Error.WriteLine(CommandLineArgs.Usage());
+                ConsoleLog.ErrorLine($"Bad args: {err}");
+                ConsoleLog.ErrorLine(CommandLineArgs.Usage());
                 return ExitBadArgs;
             }
 
@@ -64,11 +68,11 @@ namespace GenericAI.App
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (parsed.PortFromArgs)
             {
-                Console.WriteLine($"Port number: {parsed.Port}");
+                ConsoleLog.WriteLine($"Port number: {parsed.Port}");
             }
             else
             {
-                Console.WriteLine($"Invalid Input. Use default {CommandLineArgs.DefaultPort}");
+                ConsoleLog.WriteLine($"Invalid Input. Use default {CommandLineArgs.DefaultPort}");
                 FileLogger.Warn($"port not provided in args; using default {CommandLineArgs.DefaultPort} (Debug Run mode)");
             }
 
@@ -93,7 +97,7 @@ namespace GenericAI.App
                     ChannelHandle h = new ChannelHandle(p);
                     _channels.Add(h);
                     _byChannelId[p] = h;
-                    Console.WriteLine($"httpServerUrl: http://127.0.0.1:{p}/");
+                    ConsoleLog.WriteLine($"httpServerUrl: http://127.0.0.1:{p}/");
                 }
 
                 foreach (ChannelHandle h in _channels)
@@ -104,6 +108,13 @@ namespace GenericAI.App
                         return ExitPortInUse;
                     }
                 }
+
+                // Register the log sink BEFORE native init so the first
+                // channel's pool-sizing / frame-drop diagnostics land in the
+                // file log too.
+                _nativeLogDelegate = OnNativeLog;
+                _nativeLogHandle = GCHandle.Alloc(_nativeLogDelegate);
+                NativeInterop.GAI_RegisterLogCallback(_nativeLogDelegate);
 
                 // Set BEFORE the call so a SIGINT in any post-call window still
                 // routes through GAI_Deinitialize. C++ side guards null scheduler
@@ -129,7 +140,7 @@ namespace GenericAI.App
 
                 _dispatcher = new FrameDispatcher(_byChannelId, drops);
                 _dispatcher.Register();
-                Console.WriteLine("register Callback");
+                ConsoleLog.WriteLine("register Callback");
 
                 ChannelHandle[] channelsByIdx = _channels.ToArray();
                 BlockingCollection<RawDetection>[] allEncodeQs = channelsByIdx.Select(c => c.EncodeQ).ToArray();
@@ -269,6 +280,11 @@ namespace GenericAI.App
                     s_nativeInit = false;
                 }
 
+                // After Deinitialize: native threads are joined, so no more
+                // log callbacks can arrive once the pointer is cleared.
+                try { NativeInterop.GAI_RegisterLogCallback(null); } catch { }
+                try { if (_nativeLogHandle.IsAllocated) _nativeLogHandle.Free(); } catch { }
+
                 if (s_timeBeginPeriodSet)
                 {
                     try { TimeEndPeriod(1); } catch { }
@@ -279,6 +295,29 @@ namespace GenericAI.App
                 FileLogger.Shutdown();
             }
             catch { }
+        }
+
+        // Native diagnostics sink (GAI_RegisterLogCallback target). Runs on
+        // native threads (MmfReader / SetParameters apply); must never throw
+        // across the P/Invoke boundary. FileLogger only enqueues, so this is
+        // cheap enough for the native callers.
+        private static void OnNativeLog(int level, IntPtr message)
+        {
+            try
+            {
+                string msg = Marshal.PtrToStringAnsi(message);
+                if (string.IsNullOrEmpty(msg)) return;
+                switch (level)
+                {
+                    case 2: FileLogger.Error("[native] " + msg); break;
+                    case 1: FileLogger.Warn("[native] " + msg); break;
+                    default: FileLogger.Info("[native] " + msg); break;
+                }
+            }
+            catch
+            {
+                // Logging must never crash the native caller.
+            }
         }
 
         // GenericAI-specific console lines beyond the CSharp sample's set.

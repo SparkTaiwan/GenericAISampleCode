@@ -121,6 +121,49 @@ namespace GenericAINativeTests
             Assert::AreEqual(66, v.params.sensitivity);
         }
 
+        TEST_METHOD(ImageDims_CarriedIntoParams)
+        {
+            GAI_Settings s = MakeEmptySettings();
+            FillRectGroup(s, 0, 0, 0, 100, 100);
+            s.image_width = 1920;
+            s.image_height = 1080;
+
+            gai::ParamSnapshot snap;
+            // Fresh snapshot has no reference space yet.
+            Assert::AreEqual(0, snap.Take().params.image_width);
+            Assert::AreEqual(0, snap.Take().params.image_height);
+
+            snap.Apply(s);
+
+            gai::ParamSnapshot::View v = snap.Take();
+            Assert::AreEqual(1920, v.params.image_width);
+            Assert::AreEqual(1080, v.params.image_height);
+        }
+
+        TEST_METHOD(ImageDims_UpdateEvenWhenAllGroupsInvalid)
+        {
+            GAI_Settings valid = MakeEmptySettings();
+            FillRectGroup(valid, 0, 0, 0, 100, 100);
+            valid.threshold[0] = 77;
+            valid.sensitivity[0] = 66;
+            valid.image_width = 1920;
+            valid.image_height = 1080;
+
+            GAI_Settings invalid = MakeEmptySettings();
+            invalid.image_width = 640;
+            invalid.image_height = 360;
+
+            gai::ParamSnapshot snap;
+            snap.Apply(valid);
+            snap.Apply(invalid);
+
+            gai::ParamSnapshot::View v = snap.Take();
+            Assert::AreEqual(77, v.params.threshold);     // tuning keeps the last valid set
+            Assert::AreEqual(66, v.params.sensitivity);
+            Assert::AreEqual(640, v.params.image_width);  // reference space follows the payload
+            Assert::AreEqual(360, v.params.image_height);
+        }
+
         TEST_METHOD(RectDerivedFromFirstAndThirdPoint)
         {
             GAI_Settings s = MakeEmptySettings();

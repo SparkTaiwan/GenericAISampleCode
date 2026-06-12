@@ -10,6 +10,33 @@
 
 namespace gai {
 
+namespace {
+
+// Maps the view's ROI rects and original polygon points from the
+// /SetParameters reference space onto the actual frame resolution, in place.
+// The view is this iteration's private copy (ParamSnapshot::Take), so the
+// stored snapshot keeps the reference-space coordinates for later frames.
+// Doing it here covers both detector modes and both routes at once: Motion
+// scans the scaled rects and echoes the scaled polygons, Person compares its
+// frame-space boxes against the scaled rects, and the pipelined route carries
+// the scaled view through the queue into Phase3Post.
+void ScaleViewToFrame(ParamSnapshot::View& view, int frame_w, int frame_h) {
+    const int cfg_w = view.params.image_width;
+    const int cfg_h = view.params.image_height;
+    if (!RoiScaleNeeded(cfg_w, cfg_h, frame_w, frame_h)) return;
+    for (auto& r : view.roi_rects) {
+        ScaleRoiRectToFrame(r, cfg_w, cfg_h, frame_w, frame_h);
+    }
+    for (auto& poly : view.original_roi_points) {
+        for (auto& pt : poly) {
+            pt.x = ScaleCoordToFrame(pt.x, cfg_w, frame_w);
+            pt.y = ScaleCoordToFrame(pt.y, cfg_h, frame_h);
+        }
+    }
+}
+
+}  // namespace
+
 SharedDetectorScheduler::SharedDetectorScheduler() = default;
 
 SharedDetectorScheduler::~SharedDetectorScheduler() {
@@ -200,6 +227,8 @@ void SharedDetectorScheduler::InferLoop() {
             continue;
         }
 
+        ScaleViewToFrame(view, slot->width, slot->height);
+
         DetectionResult result;
         int n = 0;
         if (kEnableTimingLog) TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);
@@ -271,6 +300,8 @@ void SharedDetectorScheduler::PreLoop() {
             chan->CommitEmpty(slot);
             continue;
         }
+
+        ScaleViewToFrame(view, slot->width, slot->height);
 
         int dslot = -1;
         if (kEnableTimingLog) TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);

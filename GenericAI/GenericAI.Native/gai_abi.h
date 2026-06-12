@@ -20,6 +20,11 @@ struct GAI_Settings {
 };
 #pragma pack(pop)
 
+// Diagnostic line pushed to the host's file logger. level: 0 = info,
+// 1 = warning, 2 = error. message is ANSI, null-terminated, and only valid
+// for the duration of the call.
+typedef void(__stdcall* GAI_LogCallback)(int level, const char* message);
+
 typedef void(__stdcall* GAI_DetectionCallback)(
     int channel_id,
     int width,

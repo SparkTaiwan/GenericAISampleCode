@@ -147,7 +147,7 @@ namespace GenericAI.App
             try
             {
                 await _client.PostAsync(url, payload).ConfigureAwait(false);
-                Console.WriteLine("Detected!! send analytics result to server!!");
+                ConsoleLog.WriteLine("Detected!! send analytics result to server!!");
                 FileLogger.Info($"Analytics result posted ok (ch={port})");
                 return true;
             }
@@ -156,7 +156,7 @@ namespace GenericAI.App
                 // Transient or persistent HTTP failure (5s client timeout,
                 // refused connection, 5xx, DNS, ...). Warn (not Error) since
                 // parking + retry is the expected behaviour.
-                Console.WriteLine($"Response: {ex.Message}");
+                ConsoleLog.WriteLine($"Response: {ex.Message}");
                 FileLogger.Warn($"SendWorker POST failed (ch={port}), parked for retry: {ex.Message}");
                 return false;
             }

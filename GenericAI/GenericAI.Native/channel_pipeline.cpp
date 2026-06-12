@@ -1,10 +1,12 @@
 #include "pch.h"
 #include "channel_pipeline.h"
 #include "gai_config.h"
+#include "host_log.h"
 #include "timing_recorder.h"
 
 #include <chrono>
 #include <iostream>
+#include <string>
 #include <utility>
 
 namespace gai {
@@ -68,11 +70,16 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
         if (s.image_width > 0 && s.image_height > 0 &&
             pool_ &&
             static_cast<std::size_t>(s.image_width) * s.image_height * 3 / 2 != pool_->SlotCapacity()) {
-            if (kEnableTimingLog) {
-                std::cout << "[channel " << port_ << "] SetParameters reports "
-                          << s.image_width << "x" << s.image_height
-                          << " but pool is locked to the first resolution; ignoring resize." << std::endl;
-            }
+            // Unconditional: the pool stays at the first resolution, so frames
+            // larger than it will be dropped wholesale by MmfReader — the
+            // operator needs to see why detection went quiet.
+            const std::string msg =
+                "[channel " + std::to_string(port_) + "] SetParameters reports " +
+                std::to_string(s.image_width) + "x" + std::to_string(s.image_height) +
+                " but pool is locked to the first resolution; ignoring resize."
+                " Restart the channel to change resolution.";
+            std::cerr << msg << std::endl;
+            HostLog(HostLogLevel::Warn, msg);
         }
         return;
     }
@@ -86,11 +93,16 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
     mmf_reader_->Start();
     has_params_.store(true, std::memory_order_release);
 
+    // Host log gets this unconditionally: the locked pool capacity is what
+    // every later "dropping frames" warning compares against.
+    const std::string msg =
+        "[channel " + std::to_string(port_) + "] pool sized to " +
+        std::to_string(s.image_width) + "x" + std::to_string(s.image_height) +
+        " (" + std::to_string(kPoolSlots) + " slots x " + std::to_string(cap) +
+        " bytes = " + std::to_string(kPoolSlots * cap) + " bytes)";
+    HostLog(HostLogLevel::Info, msg);
     if (kEnableTimingLog) {
-        std::cout << "[channel " << port_ << "] pool sized to "
-                  << s.image_width << "x" << s.image_height
-                  << " (" << kPoolSlots << " slots x " << cap << " bytes = "
-                  << (kPoolSlots * cap) << " bytes)" << std::endl;
+        std::cout << msg << std::endl;
     }
 }
 

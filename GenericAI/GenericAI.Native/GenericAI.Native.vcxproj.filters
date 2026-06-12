@@ -63,6 +63,9 @@
     <ClInclude Include="timing_recorder.h">
       <Filter>diagnostics</Filter>
     </ClInclude>
+    <ClInclude Include="host_log.h">
+      <Filter>diagnostics</Filter>
+    </ClInclude>
     <ClInclude Include="framework.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
@@ -95,6 +98,9 @@
       <Filter>io</Filter>
     </ClCompile>
     <ClCompile Include="timing_recorder.cpp">
+      <Filter>diagnostics</Filter>
+    </ClCompile>
+    <ClCompile Include="host_log.cpp">
       <Filter>diagnostics</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp" />

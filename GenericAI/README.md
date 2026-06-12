@@ -145,7 +145,13 @@ The two axes are orthogonal: `threshold` is "how strong does each pixel change h
 
 ### Parameter propagation
 
-`POST /SetParameters` ships per-ROI `sensitivity[]` / `threshold[]` arrays. The native side picks the first valid-polygon ROI slot (`rects.size() >= 3`) and uses its `(threshold, sensitivity)` for the whole frame's inference. If no ROI is valid the last good value is retained; before any `/SetParameters` arrives the built-in defaults (`threshold=25`, `sensitivity=50`) apply.
+`POST /SetParameters` ships per-ROI `sensitivity[]` / `threshold[]` arrays, but the tuning pair is semantically **one shared set for the whole channel**: the native side picks the first valid-polygon ROI slot (`rects.size() >= 3`) and uses its `(threshold, sensitivity)` for the whole frame's inference. If no ROI is valid the last good value is retained; before any `/SetParameters` arrives the built-in defaults (`threshold=25`, `sensitivity=50`) apply.
+
+### ROI coordinate space
+
+ROI coordinates in `/SetParameters` are authored in the `image_width × image_height` reference space of that payload. Frames read from the MMF carry their own resolution, which may differ (e.g. a sub-stream of the same camera). Before each inference the scheduler rescales the ROI rectangles — and the polygon points the Motion callback echoes — onto the actual frame resolution, so the same ROI keeps covering the same scene area regardless of the stream resolution. Callback coordinates are therefore always in the **actual frame's pixel space**, matching the keyframe JPEG they accompany.
+
+The per-channel frame pool is still sized from the first `/SetParameters`' `image_width`/`image_height` and stays locked for the channel's lifetime: frames **larger** than that are dropped before detection (a throttled console warning reports it), and a later `/SetParameters` with a different resolution is ignored with a warning. Restart the channel to move to a larger resolution.
 
 ## Native ABI
 

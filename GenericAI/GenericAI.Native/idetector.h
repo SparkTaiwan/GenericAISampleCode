@@ -33,10 +33,14 @@ public:
 };
 
 // Per-call detector tunables. Pulled from ParamSnapshot::View on the inference
-// thread and passed in alongside the frame.
+// thread and passed in alongside the frame. image_width/height carry the
+// /SetParameters reference resolution the ROI coordinates were authored in;
+// 0 means unknown (legacy caller) and disables ROI rescaling.
 struct DetectorParams {
     int threshold = 0;
     int sensitivity = 0;
+    int image_width = 0;
+    int image_height = 0;
 };
 
 // Abstract detector. Implementations must be stateless w.r.t. channels —

@@ -1,11 +1,14 @@
 #include "pch.h"
 #include "mmf_reader.h"
 #include "gai_config.h"
+#include "host_log.h"
 #include "timing_recorder.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
+#include <string>
 
 namespace gai {
 
@@ -76,6 +79,13 @@ bool MmfReader::EnsureMapped() {
         data->header = kMmfHeader;
         data->footer = kMmfFooter;
     }
+
+    // Once per successful map: the absence of this line in the host log means
+    // the writer side never created ChannelFrame_<port> (or its mapping is
+    // smaller than MmfData), i.e. no frame can ever reach detection.
+    HostLog(HostLogLevel::Info,
+            "[channel " + std::to_string(port_) + "] MMF ChannelFrame_" +
+            std::to_string(port_) + " mapped");
     return true;
 }
 
@@ -93,6 +103,13 @@ void MmfReader::Unmap() {
 void MmfReader::Run() {
     using namespace std::chrono;
 
+    // Throttle for the oversized-frame warning below: dropping is silent and
+    // per-frame, so without this a resolution mismatch floods the console.
+    int warned_size = 0;
+    // Throttle for the incoming-resolution info line: once per (w, h) change.
+    int logged_w = 0;
+    int logged_h = 0;
+
     while (running_.load(std::memory_order_acquire)) {
         if (!EnsureMapped()) {
             std::this_thread::sleep_for(milliseconds(50));
@@ -106,15 +123,61 @@ void MmfReader::Run() {
         }
 
         const int size = data->image_size;
+        // The recorder allocates its decode buffer with 32-byte-aligned plane
+        // strides but fills it packed (av_image_fill_arrays with align=1), so
+        // image_size over-reports the actual I420 payload by the alignment
+        // slack whenever width/2 is not a multiple of 32 (e.g. 352x240 reports
+        // 130560 bytes for a 126720-byte image). Validate and copy the packed
+        // size computed from the frame's own dimensions; image_size only has
+        // to cover it.
+        const std::size_t payload =
+            (data->image_width > 0 && data->image_height > 0)
+                ? static_cast<std::size_t>(data->image_width) *
+                      data->image_height * 3 / 2
+                : 0;
+        // The actual incoming resolution is the first thing to compare against
+        // the /SetParameters one when detection goes quiet, so it goes to the
+        // host log on the first frame and on every change — for dropped
+        // oversized frames too (the drop happens right below).
+        if ((data->image_width != logged_w || data->image_height != logged_h) &&
+            data->image_width > 0 && data->image_height > 0) {
+            logged_w = data->image_width;
+            logged_h = data->image_height;
+            HostLog(HostLogLevel::Info,
+                    "[channel " + std::to_string(port_) + "] incoming frames " +
+                    std::to_string(logged_w) + "x" + std::to_string(logged_h) +
+                    " (" + std::to_string(size) + " bytes), pool slot capacity " +
+                    std::to_string(pool_.SlotCapacity()) + " bytes");
+        }
+
         // Two upper bounds: the pool slot capacity (sized to the stream
         // resolution) guards the memcpy destination, and kMmfFrameCapacity
         // guards the source — when the configured resolution makes slots
-        // bigger than the fixed MMF image_data area (e.g. 4K), a corrupt
-        // image_size would otherwise read past the mapped view.
-        if (size <= 0 ||
-            static_cast<std::size_t>(size) > kMmfFrameCapacity ||
-            static_cast<std::size_t>(size) > pool_.SlotCapacity()) {
+        // bigger than the fixed MMF image_data area (e.g. 4K), corrupt
+        // dimensions would otherwise read past the mapped view. image_size
+        // must at least cover the packed payload, or the tail of the copy
+        // would be stale bytes from the previous frame.
+        if (size <= 0 || payload == 0 ||
+            static_cast<std::size_t>(size) < payload ||
+            payload > kMmfFrameCapacity ||
+            payload > pool_.SlotCapacity()) {
             // Corrupt / oversized frame — ack so recorder doesn't stall, keep going.
+            // Every such frame is dropped before detection, so warn loudly (once
+            // per distinct size): the usual cause is a stream resolution larger
+            // than the first /SetParameters sized the pool for.
+            if (payload > pool_.SlotCapacity() && size != warned_size) {
+                warned_size = size;
+                const std::string msg =
+                    "[channel " + std::to_string(port_) + "] dropping frames: " +
+                    std::to_string(data->image_width) + "x" +
+                    std::to_string(data->image_height) +
+                    " (" + std::to_string(payload) + " bytes packed) exceeds the pool slot of " +
+                    std::to_string(pool_.SlotCapacity()) +
+                    " bytes sized from the first /SetParameters; "
+                    "restart the channel to change resolution.";
+                std::cerr << msg << std::endl;
+                HostLog(HostLogLevel::Warn, msg);
+            }
             data->image_status = 2;
             continue;
         }
@@ -131,10 +194,10 @@ void MmfReader::Run() {
             continue;
         }
 
-        std::memcpy(slot->data.data(), data->image_data, static_cast<std::size_t>(size));
+        std::memcpy(slot->data.data(), data->image_data, payload);
         slot->width = data->image_width;
         slot->height = data->image_height;
-        slot->size = size;
+        slot->size = static_cast<int>(payload);
         slot->timestamp = data->timestamp;
 
         if (kEnableTimingLog) TimingRecorder::Instance().MarkRead(slot->timestamp, port_);

@@ -54,5 +54,52 @@ namespace GenericAINativeTests
             ROIRect r{ 50, 50, 100, 100 };
             Assert::IsTrue(BoxOverlapsRoi(b, r));
         }
+
+        TEST_METHOD(ScaleNotNeeded_WhenSpacesMatchOrUnknown)
+        {
+            Assert::IsFalse(RoiScaleNeeded(1920, 1080, 1920, 1080));
+            Assert::IsFalse(RoiScaleNeeded(0, 0, 640, 360));       // legacy caller, no reference space
+            Assert::IsFalse(RoiScaleNeeded(1920, 1080, 0, 0));     // degenerate frame
+            Assert::IsTrue(RoiScaleNeeded(1920, 1080, 640, 360));
+            Assert::IsTrue(RoiScaleNeeded(640, 360, 1920, 1080));
+        }
+
+        TEST_METHOD(ScaleRoiRect_DownscalesProportionally)
+        {
+            // 1920x1080 reference -> 640x360 frame: every coordinate divides by 3.
+            ROIRect r{ 960, 540, 1920, 1080 };
+            ScaleRoiRectToFrame(r, 1920, 1080, 640, 360);
+            Assert::AreEqual(320, r.x1);
+            Assert::AreEqual(180, r.y1);
+            Assert::AreEqual(640, r.x2);
+            Assert::AreEqual(360, r.y2);
+        }
+
+        TEST_METHOD(ScaleRoiRect_UpscalesProportionally)
+        {
+            ROIRect r{ 100, 50, 320, 180 };
+            ScaleRoiRectToFrame(r, 640, 360, 1920, 1080);
+            Assert::AreEqual(300, r.x1);
+            Assert::AreEqual(150, r.y1);
+            Assert::AreEqual(960, r.x2);
+            Assert::AreEqual(540, r.y2);
+        }
+
+        TEST_METHOD(ScaleRoiRect_NoOpWhenReferenceUnknown)
+        {
+            ROIRect r{ 8, 8, 1912, 1072 };
+            ScaleRoiRectToFrame(r, 0, 0, 640, 360);
+            Assert::AreEqual(8, r.x1);
+            Assert::AreEqual(8, r.y1);
+            Assert::AreEqual(1912, r.x2);
+            Assert::AreEqual(1072, r.y2);
+        }
+
+        TEST_METHOD(ScaleCoord_RoundsToNearest)
+        {
+            // 5 * 2/3 = 3.33 -> 3; 5 * 1/2 = 2.5 -> 3 (round half up).
+            Assert::AreEqual(3, ScaleCoordToFrame(5, 3, 2));
+            Assert::AreEqual(3, ScaleCoordToFrame(5, 2, 1));
+        }
     };
 }

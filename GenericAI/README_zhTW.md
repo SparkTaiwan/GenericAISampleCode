@@ -145,7 +145,13 @@ Detector 內部常數（不在對外協定中）：
 
 ### 參數傳遞流程
 
-`POST /SetParameters` 帶的是 per-ROI 的 `sensitivity[]` / `threshold[]` 陣列。Native 端會挑第一個 polygon 有效（`rects.size() >= 3`）的 ROI slot，用它的 `(threshold, sensitivity)` 作為整個 frame 推論用的參數。如果整批 ROI 都不合法，保留上次的值；在第一次 `/SetParameters` 到達前，套用內建預設（`threshold=25`、`sensitivity=50`）。
+`POST /SetParameters` 帶的是 per-ROI 的 `sensitivity[]` / `threshold[]` 陣列，但這組調參在語意上是**整個通道共用一組**：Native 端會挑第一個 polygon 有效（`rects.size() >= 3`）的 ROI slot，用它的 `(threshold, sensitivity)` 作為整個 frame 推論用的參數。如果整批 ROI 都不合法，保留上次的值；在第一次 `/SetParameters` 到達前，套用內建預設（`threshold=25`、`sensitivity=50`）。
+
+### ROI 座標空間
+
+`/SetParameters` 裡的 ROI 座標是以該 payload 的 `image_width × image_height` 為基準空間。從 MMF 讀進來的影格帶有自己的解析度，兩者可能不同（例如同一支攝影機的子串流）。每次推論前 scheduler 會把 ROI 矩形——以及 Motion 回呼回聲的 polygon 點——等比換算到實際影格解析度，因此不論串流解析度為何，同一個 ROI 都對應到畫面上同一塊區域。回呼裡的座標一律是**實際影格的像素空間**，與隨附的 keyframe JPEG 對齊。
+
+每通道的 frame pool 仍以第一次 `/SetParameters` 的 `image_width`/`image_height` 配置容量並在通道存活期間鎖定：**大於**該容量的影格會在進偵測前被丟棄（console 會輸出節流後的警告），之後再送不同解析度的 `/SetParameters` 也會被忽略並警告。要換成更大的解析度需重啟該通道。
 
 ## Native ABI
 

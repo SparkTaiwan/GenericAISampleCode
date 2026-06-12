@@ -44,7 +44,15 @@ void ParamSnapshot::Apply(const GAI_Settings& s) {
     roi_rects_.swap(rects);
     original_roi_points_.swap(polygons);
     if (have_first) {
-        latest_params_ = params;
+        latest_params_.threshold   = params.threshold;
+        latest_params_.sensitivity = params.sensitivity;
+    }
+    // The reference resolution updates on every call that carries one, even
+    // when no ROI group is valid — it describes the coordinate space of the
+    // payload itself, not the tuning values (which keep their last good set).
+    if (s.image_width > 0 && s.image_height > 0) {
+        latest_params_.image_width  = s.image_width;
+        latest_params_.image_height = s.image_height;
     }
 }
 

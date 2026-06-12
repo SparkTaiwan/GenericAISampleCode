@@ -3,6 +3,7 @@
 #include "detector_factory.h"
 #include "gai_abi.h"
 #include "gai_config.h"
+#include "host_log.h"
 #include "shared_detector_scheduler.h"
 #include "timing_recorder.h"
 
@@ -96,6 +97,14 @@ __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     }
     try { gai::TimingRecorder::Instance().Shutdown(); } catch (...) {}
     return 0;
+}
+
+// Registers the host log sink. Independent of the scheduler lifecycle so the
+// C# side can register before GAI_InitializeChannels and catch the first
+// channel's pool-sizing / frame-drop diagnostics. Pass nullptr to unregister
+// (the host must do this before freeing its delegate).
+__declspec(dllexport) void __cdecl GAI_RegisterLogCallback(GAI_LogCallback cb) {
+    gai::SetHostLogCallback(cb);
 }
 
 // Writes "CPU" / "DirectML(0)" / "" into buf (null-terminated, ANSI). Returns
