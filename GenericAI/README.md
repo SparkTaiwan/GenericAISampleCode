@@ -33,7 +33,22 @@ nuget restore GenericAI/GenericAI.sln
 msbuild GenericAI/GenericAI.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-Or open `GenericAI/GenericAI.sln` in Visual Studio, pick `x64 / Release`, and build. Output lands in `GenericAI/bin/Release/`.
+Or open `GenericAI/GenericAI.sln` in Visual Studio, pick `x64 / Release`, and build. Output lands in `GenericAI/bin/Release/x64/`.
+
+## Release contents
+
+Everything a deployment needs is in `GenericAI/bin/Release/x64/` after a Release build:
+
+| File | Purpose |
+| --- | --- |
+| `GenericAI.exe` + `GenericAI.exe.config` | Host process. |
+| `GenericAI.Native.dll` | Detector pipeline (`GAI_*` C ABI). |
+| `onnxruntime.dll`, `DirectML.dll` | ONNX Runtime + DirectML EP for the Person detector. |
+| `turbojpeg.dll` + `turbojpeg.LICENSE.md` | Callback JPEG encoding (license must ship with the dll). |
+| `Newtonsoft.Json.dll`, `System.Buffers.dll` | Managed dependencies. |
+| `models\` (`yolox_m_fp16.onnx` + `LICENSE.md`) | Person detector model (Apache 2.0 text must ship with it). |
+
+`*.pdb` / `*.lib` / `*.exp` / `*.iobj` / `*.ipdb` are build artifacts and need not ship.
 
 ## Run
 
@@ -62,11 +77,12 @@ Production-side spawn always passes `port=` explicitly. Running the exe without 
 
 ## Logging & Diagnostics
 
-All switches are compile-time constants: edit one line, rebuild, restart the exe. With everything off (the default) the console output matches the legacy `CSharp/SampleWrapper.exe` and no log directory is ever created.
+All switches are compile-time constants: edit one line, rebuild, restart the exe. With the defaults below the console output matches the legacy `CSharp/SampleWrapper.exe` and no log directory is ever created.
 
 | Switch                   | Location                                    | Default   | Effect                                                                                                          |
 | ------------------------ | ------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------- |
-| `FileLogger.Enabled`   | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR file logging.                                                                               |
+| `FileLogger.Enabled`   | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR file logging, including the native-side lines forwarded through the log callback.            |
+| `ConsoleLog.Enabled`   | `GenericAI.App/Diagnostics/ConsoleLog.cs` | `true` | The sample-matching console lines (HTTP state, SetParameters echo, send results).                                |
 | `TimingRecorder.Enabled` | `GenericAI.App/Diagnostics/TimingRecorder.cs` | `false` | C#-side per-frame timing lines (console + `timing-<basePort>.log`) and the GenericAI-specific verbose console lines. |
 | `kEnableTimingLog`     | `GenericAI.Native/gai_config.h`           | `false` | Native-side per-frame timing lines and the native informational console lines.                                  |
 
@@ -77,6 +93,8 @@ Log files land in `%ProgramData%\Spark\GenericAI\Logs\`:
 - `timing-<basePort>.log` — per-frame timing lines from the C# `TimingRecorder`
 
 Writing is asynchronous: producers enqueue into a bounded queue and a single background thread drains it, so logging never blocks the frame path. Files rotate at 5 MB with 3 backups, and names carry the base port so concurrent instances never contend for the same file.
+
+With file logging enabled, native-side diagnostics (pool sizing, MMF mapping, dropped-frame warnings) reach the same per-port log file with a `[native]` prefix: the host registers a sink via `GAI_RegisterLogCallback` at startup, so one file tells the whole story across the managed/native boundary.
 
 ## Wire Protocol
 
@@ -98,13 +116,14 @@ Each channel listens on its own port:
 - Per-channel name: `ChannelFrame_<channelPort>` (channel `k` reads from `ChannelFrame_{port + 2*k}`).
 - Layout mirrors `MMF_Data` in the legacy `CSharp/SampleDLL/dllmain.cpp` to keep the recorder writer unchanged.
 - `status` byte: `0=unused → 1=new frame → 2=consumed`. The wrapper polls and flips `1 → 2` after acquiring a frame.
+- `image_size` may over-report the packed I420 payload (the recorder sizes its decode buffer with 32-byte-aligned plane strides, e.g. 352x240 reports 130560 bytes for a 126720-byte image). The wrapper validates and copies `width*height*3/2` computed from the frame's own dimensions and tolerates the slack.
 
 ## Detector Backends
 
 The active detector is selected at compile time via `gai_config.h`:
 
 ```cpp
-constexpr DetectorKind kDetectorKind = DetectorKind::Person;   // or DetectorKind::Motion
+constexpr DetectorKind kDetectorKind = DetectorKind::Motion;   // or DetectorKind::Person
 constexpr bool         kPreferGpu    = true;                   // Person only
 ```
 
@@ -162,6 +181,7 @@ The per-channel frame pool is still sized from the first `/SetParameters`' `imag
 | `GAI_InitializeChannels(ports, count)`          | Allocate per-channel pipelines, build detector, start scheduler. |
 | `GAI_SetChannelParameters(port, *GAI_Settings)` | Push the latest `/SetParameters` payload for one channel.      |
 | `GAI_RegisterCallback(cb)`                      | Register the detection callback fired from `FrameDispatcher`.  |
+| `GAI_RegisterLogCallback(cb)`                   | Register the host log sink; native INFO / WARN / ERROR lines land in the per-port file log with a `[native]` prefix. |
 | `GAI_GetBackend(buf, len)`                      | Read back the actual loaded EP (`CPU` / `DirectML(0)`).      |
 | `GAI_Deinitialize()`                            | Stop scheduler, free detector, drain queues.                     |
 
@@ -204,9 +224,11 @@ GenericAI/
       DetectorType.cs       managed mirror of the native DetectorKind
     Diagnostics/
       FileLogger.cs         async file logger (%ProgramData%\Spark\GenericAI\Logs)
+      ConsoleLog.cs         gate for the sample-matching console lines
       TimingRecorder.cs     optional timing instrumentation
   GenericAI.Native/         flat on disk; grouped in VS via .vcxproj.filters
     exports.cpp             GAI_* C ABI
+    host_log.{h,cpp}        native → host log bridge (GAI_RegisterLogCallback)
     shared_detector_scheduler.{h,cpp}   shared-detector + N-channel scheduling
     channel_pipeline.{h,cpp}            per-channel work queue
     param_snapshot.{h,cpp}              per-channel /SetParameters store (ROIs + tuning params)

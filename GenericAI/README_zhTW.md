@@ -34,7 +34,22 @@ nuget restore GenericAI/GenericAI.sln
 msbuild GenericAI/GenericAI.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-或在 Visual Studio 開啟 `GenericAI/GenericAI.sln`、選 `x64 / Release`、build。產出位於 `GenericAI/bin/Release/`。
+或在 Visual Studio 開啟 `GenericAI/GenericAI.sln`、選 `x64 / Release`、build。產出位於 `GenericAI/bin/Release/x64/`。
+
+## 發佈內容
+
+Release build 後，部署所需的所有檔案都在 `GenericAI/bin/Release/x64/`：
+
+| 檔案 | 用途 |
+| --- | --- |
+| `GenericAI.exe` + `GenericAI.exe.config` | Host process。 |
+| `GenericAI.Native.dll` | Detector pipeline（`GAI_*` C ABI）。 |
+| `onnxruntime.dll`、`DirectML.dll` | Person detector 用的 ONNX Runtime + DirectML EP。 |
+| `turbojpeg.dll` + `turbojpeg.LICENSE.md` | Callback JPEG encode（授權檔須隨 dll 一起出貨）。 |
+| `Newtonsoft.Json.dll`、`System.Buffers.dll` | Managed 相依。 |
+| `models\`（`yolox_m_fp16.onnx` + `LICENSE.md`） | Person detector 模型（Apache 2.0 授權文字須隨附）。 |
+
+`*.pdb` / `*.lib` / `*.exp` / `*.iobj` / `*.ipdb` 為建置中間產物，不需出貨。
 
 ## 執行
 
@@ -63,11 +78,12 @@ Exit code：
 
 ## 日誌與診斷
 
-所有開關都是編譯期常數：改一行、rebuild、重啟 exe。全部關閉（預設）時，console 輸出與舊版 `CSharp/SampleWrapper.exe` 一致，也不會建立任何 log 目錄。
+所有開關都是編譯期常數：改一行、rebuild、重啟 exe。維持下表預設值時，console 輸出與舊版 `CSharp/SampleWrapper.exe` 一致，也不會建立任何 log 目錄。
 
 | 開關 | 位置 | 預設 | 效果 |
 | --- | --- | --- | --- |
-| `FileLogger.Enabled` | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR 檔案日誌。 |
+| `FileLogger.Enabled` | `GenericAI.App/Diagnostics/FileLogger.cs` | `false` | INFO / WARN / ERROR 檔案日誌，含經由 log callback 轉送的 native 端訊息。 |
+| `ConsoleLog.Enabled` | `GenericAI.App/Diagnostics/ConsoleLog.cs` | `true` | 與舊版 sample 對齊的 console 輸出（HTTP 狀態、SetParameters echo、送出結果）。 |
 | `TimingRecorder.Enabled` | `GenericAI.App/Diagnostics/TimingRecorder.cs` | `false` | C# 側 per-frame timing 輸出（console + `timing-<basePort>.log`），同時打開 GenericAI 特有的 verbose console 訊息。 |
 | `kEnableTimingLog` | `GenericAI.Native/gai_config.h` | `false` | Native 側 per-frame timing 輸出與 native 端的資訊性 console 訊息。 |
 
@@ -78,6 +94,8 @@ Log 檔位於 `%ProgramData%\Spark\GenericAI\Logs\`：
 - `timing-<basePort>.log` — C# `TimingRecorder` 的 per-frame timing 輸出
 
 寫入為非同步：producer 只把訊息塞進 bounded queue，由單一背景 thread 批次落盤，所以日誌絕不會卡住 frame 路徑。檔案 5 MB 輪替、保留 3 份備份；檔名帶 base port，多個 instance 並行時不會搶同一個檔案。
+
+檔案日誌開啟時，native 端的診斷訊息（pool 配置、MMF 對應、丟 frame 警告）會帶 `[native]` 前綴進到同一個 per-port log 檔：host 啟動時透過 `GAI_RegisterLogCallback` 註冊 sink，managed / native 兩側的事件都收在同一份檔案裡。
 
 ## 對外契約
 
@@ -99,13 +117,14 @@ HTTP control plane 與 MMF layout 完全對齊 `spark.recorder/modules/AIService
 - Per-channel 命名：`ChannelFrame_<channelPort>`（第 `k` 路讀 `ChannelFrame_{port + 2*k}`）。
 - Layout 對齊舊版 `CSharp/SampleDLL/dllmain.cpp` 的 `MMF_Data`，讓 recorder 端 writer 不用改。
 - `status` byte：`0=unused → 1=new frame → 2=consumed`。Wrapper poll 拿到後翻 `1 → 2`。
+- `image_size` 可能大於緊湊排列的 I420 實際大小（recorder 解碼緩衝區以 32-byte 對齊的 plane stride 計算，例如 352x240 回報 130560 bytes，實際影像只有 126720 bytes）。Wrapper 以影格自帶的寬高算出 `width*height*3/2` 來驗證與複製，容忍多出來的餘量。
 
 ## Detector backend
 
 由 `gai_config.h` 編譯期決定要載入哪一個 detector：
 
 ```cpp
-constexpr DetectorKind kDetectorKind = DetectorKind::Person;   // 或 DetectorKind::Motion
+constexpr DetectorKind kDetectorKind = DetectorKind::Motion;   // 或 DetectorKind::Person
 constexpr bool         kPreferGpu    = true;                   // 僅 Person 有效
 ```
 
@@ -162,6 +181,7 @@ Detector 內部常數（不在對外協定中）：
 | `GAI_InitializeChannels(ports, count)` | 配置 per-channel pipeline、建立 detector、啟動 scheduler。 |
 | `GAI_SetChannelParameters(port, *GAI_Settings)` | 將最新的 `/SetParameters` payload 推進對應 channel。 |
 | `GAI_RegisterCallback(cb)` | 註冊 `FrameDispatcher` 觸發的偵測 callback。 |
+| `GAI_RegisterLogCallback(cb)` | 註冊 host log sink；native 端 INFO / WARN / ERROR 訊息帶 `[native]` 前綴進 per-port log 檔。 |
 | `GAI_GetBackend(buf, len)` | 讀回實際載入的 EP（`CPU` / `DirectML(0)`）。 |
 | `GAI_Deinitialize()` | 停 scheduler、釋放 detector、清 queue。 |
 
@@ -204,9 +224,11 @@ GenericAI/
       DetectorType.cs       對應 native DetectorKind 的 managed 列舉
     Diagnostics/
       FileLogger.cs         非同步檔案 logger（%ProgramData%\Spark\GenericAI\Logs）
+      ConsoleLog.cs         與舊版 sample 對齊的 console 輸出開關
       TimingRecorder.cs     可選的 timing instrumentation
   GenericAI.Native/         磁碟上維持扁平；VS 內以 .vcxproj.filters 分組
     exports.cpp             GAI_* C ABI
+    host_log.{h,cpp}        native → host log 橋接（GAI_RegisterLogCallback）
     shared_detector_scheduler.{h,cpp}   單 detector + N-channel 排程
     channel_pipeline.{h,cpp}            per-channel work queue
     param_snapshot.{h,cpp}              per-channel /SetParameters 儲存（ROI + 調校參數）

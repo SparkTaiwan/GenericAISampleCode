@@ -24,7 +24,7 @@ namespace GenericAI.App
         // Manual switch for INFO/WARN/ERROR file logging: edit -> rebuild.
         // Timing(...) is gated by TimingRecorder.Enabled instead, so timing
         // capture works without turning the general log on.
-        public const bool Enabled = true;
+        public const bool Enabled = false;
 
         private const long MaxFileBytes = 5 * 1024 * 1024;
         private const int  MaxBackupFiles = 3;
