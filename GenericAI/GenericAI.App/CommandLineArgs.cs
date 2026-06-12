@@ -1,17 +1,17 @@
-using System;
-
 namespace GenericAI.App
 {
     internal sealed class CommandLineArgs
     {
-        // Mirrors CSharp/Program.cs:414's default so `F5 / Debug Run` works
-        // without configuring VS launch args. Production spawn always passes
-        // port= explicitly (spark.recorder/.../AStreamPerimeter_GenericAI.cpp:442).
-        public const int DefaultPort = 51000;
+        // Lets `F5 / Debug Run` work without configuring VS launch args.
+        // Production spawn always passes port= explicitly
+        // (spark.recorder/.../AStreamPerimeter_GenericAI.cpp:442). Kept below
+        // Windows' default dynamic port range (49152..65535) so the consecutive
+        // [port, port + channel_count) block doesn't collide with whatever
+        // outbound connections other processes happen to be holding.
+        public const int DefaultPort = 46000;
 
         public int Port { get; private set; } = DefaultPort;
         public bool PortFromArgs { get; private set; }
-        public string LogDir { get; private set; } = "";
         public int ChannelCount { get; private set; } = 1;
         public int EncodeWorkers { get; private set; } = 2;
         public int SendWorkers { get; private set; } = 2;
@@ -44,10 +44,6 @@ namespace GenericAI.App
                         }
                         parsed.Port = p;
                         parsed.PortFromArgs = true;
-                        break;
-
-                    case "log":
-                        parsed.LogDir = val;
                         break;
 
                     case "channel_count":
@@ -88,7 +84,7 @@ namespace GenericAI.App
 
         public static string Usage()
         {
-            return "Usage: GenericAI.App.exe [port=<int>] [channel_count=<N>] [log=<dir>]" +
+            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>]" +
                    " [encode_workers=<N>] [send_workers=<M>]" +
                    "\n(detector type is a compile-time flag in GenericAI.Native/gai_config.h)";
         }

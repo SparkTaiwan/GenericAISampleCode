@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -9,16 +9,24 @@ using System.Threading.Tasks;
 namespace GenericAI.App
 {
     // Per-frame timing recorder (singleton). Records timestamps at 7 points in
-    // the C# pipeline, writes one console line per frame at the terminal point
-    // (HTTP post complete, or any drop path). The matching C++ side has its
-    // own recorder in timing_recorder.{h,cpp} also printing to console; the
-    // two lines are correlated by the frame's MMF timestamp.
+    // the C# pipeline, writes one line per frame at the terminal point (HTTP
+    // post complete, or any drop path) to both the console and the
+    // timing-<port>.log file (FileLogger.Timing). The matching C++ side has
+    // its own recorder in timing_recorder.{h,cpp} printing to console only;
+    // the lines are correlated by the frame's MMF timestamp.
     //
-    // Temporary Step 10/11 instrumentation. Toggle via the const Enabled flag
-    // below; when false, every Mark/Flush short-circuits at the first line.
+    // Manual switch: edit Enabled -> rebuild. It also gates the GenericAI-
+    // specific verbose console lines in Program (Program.VerboseConsole), so
+    // with it off the console output matches the CSharp sample exactly.
+    // Matching native switch: kEnableTimingLog in gai_config.h.
+    //
+    // Enabled is a compile-time const: when false, the guard on every method
+    // makes the rest of the body unreachable (CS0162) and the JIT strips the
+    // calls entirely, so the hot-path Mark sites cost nothing.
+#pragma warning disable 162
     internal sealed class TimingRecorder
     {
-        public const bool Enabled = true;
+        public const bool Enabled = false;
 
         private static readonly TimingRecorder _instance = new TimingRecorder();
         public static TimingRecorder Instance => _instance;
@@ -76,9 +84,7 @@ namespace GenericAI.App
             if (_initialized) return;
             _initialized = true;
 
-#pragma warning disable 162  // CS0162: unreachable when Enabled = true (compile-time switch)
             if (!Enabled) return;
-#pragma warning restore 162
 
             _enabledRuntime = true;
             _sweeperCts = new CancellationTokenSource();
@@ -87,7 +93,7 @@ namespace GenericAI.App
 
         public void Shutdown()
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             _enabledRuntime = false;
 
             try { _sweeperCts?.Cancel(); } catch { }
@@ -105,7 +111,7 @@ namespace GenericAI.App
 
         public void MarkCallbackEnter(ulong timestamp, int port)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             FrameRecord r = _records.GetOrAdd(timestamp, _ => new FrameRecord());
             r.Created = now;
@@ -116,7 +122,7 @@ namespace GenericAI.App
 
         public void MarkEncodeQueueIn(ulong timestamp)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryGetValue(timestamp, out FrameRecord r)) return;
             r.EncIn = now;
@@ -125,7 +131,7 @@ namespace GenericAI.App
 
         public void MarkEncodeQueueOut(ulong timestamp)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryGetValue(timestamp, out FrameRecord r)) return;
             r.EncOut = now;
@@ -134,7 +140,7 @@ namespace GenericAI.App
 
         public void MarkJpegDone(ulong timestamp)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryGetValue(timestamp, out FrameRecord r)) return;
             r.Jpeg = now;
@@ -143,7 +149,7 @@ namespace GenericAI.App
 
         public void MarkSendQueueIn(ulong timestamp)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryGetValue(timestamp, out FrameRecord r)) return;
             r.SendIn = now;
@@ -152,7 +158,7 @@ namespace GenericAI.App
 
         public void MarkSendQueueOut(ulong timestamp)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryGetValue(timestamp, out FrameRecord r)) return;
             r.SendOut = now;
@@ -161,7 +167,7 @@ namespace GenericAI.App
 
         public void Flush(ulong timestamp, FrameState state)
         {
-            if (!_enabledRuntime) return;
+            if (!Enabled || !_enabledRuntime) return;
             long now = Stopwatch.GetTimestamp();
             if (!_records.TryRemove(timestamp, out FrameRecord r)) return;
             if (state == FrameState.Ok)
@@ -224,7 +230,9 @@ namespace GenericAI.App
             // Console.WriteLine is internally thread-safe (Console.Out is a
             // SyncTextWriter wrapper), so concurrent writers from EncodeWorker
             // / SendWorker / sweeper don't interleave at the line level.
-            try { Console.WriteLine(sb.ToString()); } catch { }
+            string line = sb.ToString();
+            try { Console.WriteLine(line); } catch { }
+            FileLogger.Timing(line);
         }
 
         private static void AppendField(StringBuilder sb, string name, bool hasStart, bool hasEnd, long start, long end)
@@ -255,4 +263,5 @@ namespace GenericAI.App
             }
         }
     }
+#pragma warning restore 162
 }

@@ -1,22 +1,29 @@
 
 # GenericAISampleCode
 
-A generic AI integration sample project. This repository demonstrates how to build a cross-language AI interface using HTTP/JSON for communication, enabling integration between NVR/CMS systems and various AI modules.
+A generic AI integration sample project. This repository demonstrates how to build a cross-language AI interface using HTTP/JSON for control and shared memory for frame transfer, enabling integration between NVR/CMS systems and various AI modules. Besides the reference samples (C#, Python) it also hosts the production multi-channel wrapper (`GenericAI/`).
 
 ## Project Structure
 
+### GenericAI/
+
+The production multi-channel AI wrapper that replaces the single-channel `CSharp/` sample: a C# host process (`GenericAI.exe`) plus a C++ detector DLL (`GenericAI.Native.dll`, Motion or YOLOX person detection) serving N video channels from one process. See [GenericAI/README.md](GenericAI/README.md) (English) or [GenericAI/README_zhTW.md](GenericAI/README_zhTW.md) (繁體中文).
+
 ### CSharp/
 
-Contains C# sample code for AI integration. This folder includes:
+The original single-channel C# sample wrapper (`SampleWrapper.exe`), kept as reference code. This folder includes:
 
 - **Program.cs**: Main program logic, DLL invocation, and callback handling.
-- **SimpleHttpClient.cs**: HTTP client implementation for sending analytics results.
-- **SimpleHttpServer.cs**: HTTP server implementation for receiving parameters and health checks.
+- **SimpleHttpClient.cs** / **SimpleHttpServer.cs**: HTTP client / server for analytics results, parameters, and health checks.
+- **FileLogger.cs** / **TurboJpegInterop.cs**: file logging and libjpeg-turbo JPEG encoding.
 - **SampleDLL/**: C++ DLL project for shared memory handling, image analysis, and callback mechanisms.
-- **SampleWrapper.csproj**: C# project file.
-- **SampleWrapper.sln**: Visual Studio solution file (developed using VS2022).
+- **SampleWrapper.sln** / **SampleWrapper.csproj**: Visual Studio solution and project files.
 
-The C# version demonstrates how to wrap AI modules and communicate with NVR/CMS systems using .NET.
+The C# version demonstrates how to wrap AI modules and communicate with NVR/CMS systems using .NET. See [CSharp/README.md](CSharp/README.md).
+
+### CSharp_Single/
+
+A variant of the C# sample exercising the v1.3 "Single mode" protocol, where one process opens multiple channels through a single DLL instead of one process per channel.
 
 ### Python/
 
@@ -39,12 +46,11 @@ The Python version is designed to be lightweight, cross-platform, and easy to ex
 
 ### TestProg/
 
-Contains test programs and related files for integration testing. This includes executable files and configuration files for testing the AI integration. The source code for this part will be organized and uploaded in future updates.
+Contains the prebuilt test program (`Spark_Test_Prog.exe` with its OpenCV / FFmpeg runtime and `param.json`) for integration testing. The source code for this part will be organized and uploaded in future updates.
 
 ### Documentation
 
 - **SparkARGO-ARGO Generic AI Integration Sample Code Guide Version 1.2.pdf**: English guide providing an overview of the architecture and design principles.
-- **SparkARGO-Argo 通用 AI 整合文件 version 1.2.pdf**: Chinese documentation with similar content.
 
 ## Architecture (textual)
 
@@ -100,8 +106,6 @@ Implementation notes:
 - Shared memory is used for high-throughput frame transfer; control and result messages use HTTP/JSON.
 - The C# examples define shared-memory layout (`MMF_Data` struct) and HTTP handlers; the Python example follows the same high-level contract.
 - Separating control (HTTP) and frame transfer (shared memory) reduces IPC overhead and keeps the protocol simple.
-
-If you'd like, I can also add this textual architecture block to `CSharp/README.md` and `Python/README.md` so each language folder documents the same flows.
 
 ## SampleWrapper runtime flow
 
@@ -182,9 +186,9 @@ This creates a standalone executable in the `dist` directory.
 
 ## Notes
 
-- The repository currently provides sample code for C# and Python. You may choose either language as a starting point for your integration.
+- The repository provides sample code for C# and Python — you may choose either language as a starting point for your integration — plus the production-grade `GenericAI/` wrapper.
 - Test program source code will be organized and uploaded in future updates.
-- For details on the architecture and design, please refer to the provided PDF documents.
+- For details on the architecture and design, please refer to the provided PDF document.
 
 ## License
 

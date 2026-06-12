@@ -55,8 +55,5 @@ namespace GenericAI.App
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_Deinitialize();
-
-        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-        public static extern int GAI_GetBackend(System.Text.StringBuilder buf, int bufLen);
     }
 }

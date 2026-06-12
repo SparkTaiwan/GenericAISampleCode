@@ -8,6 +8,7 @@ x86/
 
 # Visual Studio
 .vs/
+*.user
 
 # NuGet
 packages/
@@ -17,3 +18,6 @@ packages/
 
 # Sample videos
 *.mp4
+
+# Local-only test harness
+RecorderSimulator/

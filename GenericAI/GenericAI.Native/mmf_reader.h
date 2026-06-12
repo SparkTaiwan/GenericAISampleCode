@@ -15,8 +15,11 @@ namespace gai {
 // status 0=idle 1=new 2=consumed) so spark.recorder side stays unchanged.
 //
 // On status==1: copy bytes into a BufferPool slot, set status=2, push slot
-// into the infer queue. If the pool is exhausted, still set status=2 so the
-// recorder is not blocked; the frame is simply dropped.
+// into the infer queue. If the pool is exhausted, leave status=1 (no ack),
+// sleep briefly and retry — recorder side sees status unchanged and applies
+// its own backpressure. Same shape on infer-queue push failure. Each retry
+// iteration is counted in pool_stall_count_; the wrapper never drops a frame
+// of its own accord.
 class MmfReader {
 public:
     MmfReader(int port, BufferPool& pool, BoundedQueue<FrameSlot*>& out);
@@ -31,7 +34,9 @@ public:
 
     // Diagnostics (lock-free atomic reads).
     std::uint64_t FramesRead() const { return frames_read_.load(std::memory_order_relaxed); }
-    std::uint64_t FramesDropped() const { return frames_dropped_.load(std::memory_order_relaxed); }
+    // Number of stall events (pool full OR infer-queue push failure), not a
+    // frame count — the same frame can stall in both stages and contribute twice.
+    std::uint64_t PoolStallCount() const { return pool_stall_count_.load(std::memory_order_relaxed); }
 
 private:
     void Run();
@@ -49,7 +54,7 @@ private:
     std::thread thread_;
 
     std::atomic<std::uint64_t> frames_read_{0};
-    std::atomic<std::uint64_t> frames_dropped_{0};
+    std::atomic<std::uint64_t> pool_stall_count_{0};
 };
 
 }  // namespace gai

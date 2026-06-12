@@ -10,6 +10,33 @@
 
 namespace gai {
 
+namespace {
+
+// Maps the view's ROI rects and original polygon points from the
+// /SetParameters reference space onto the actual frame resolution, in place.
+// The view is this iteration's private copy (ParamSnapshot::Take), so the
+// stored snapshot keeps the reference-space coordinates for later frames.
+// Doing it here covers both detector modes and both routes at once: Motion
+// scans the scaled rects and echoes the scaled polygons, Person compares its
+// frame-space boxes against the scaled rects, and the pipelined route carries
+// the scaled view through the queue into Phase3Post.
+void ScaleViewToFrame(ParamSnapshot::View& view, int frame_w, int frame_h) {
+    const int cfg_w = view.params.image_width;
+    const int cfg_h = view.params.image_height;
+    if (!RoiScaleNeeded(cfg_w, cfg_h, frame_w, frame_h)) return;
+    for (auto& r : view.roi_rects) {
+        ScaleRoiRectToFrame(r, cfg_w, cfg_h, frame_w, frame_h);
+    }
+    for (auto& poly : view.original_roi_points) {
+        for (auto& pt : poly) {
+            pt.x = ScaleCoordToFrame(pt.x, cfg_w, frame_w);
+            pt.y = ScaleCoordToFrame(pt.y, cfg_h, frame_h);
+        }
+    }
+}
+
+}  // namespace
+
 SharedDetectorScheduler::SharedDetectorScheduler() = default;
 
 SharedDetectorScheduler::~SharedDetectorScheduler() {
@@ -180,13 +207,13 @@ void SharedDetectorScheduler::InferLoop() {
         ParamSnapshot::View view;
         if (!chan->TryAcquireWork(slot, view)) continue;
 
-        TimingRecorder::Instance().MarkInferQueueOut(slot->timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().MarkInferQueueOut(slot->timestamp);
 
         // HasParams gates on 'pool sized', not 'ROI configured' — the first
         // /SetParameters can lock resolution while leaving rois[] empty, so
         // this guard must stay even though PickNextChannel filtered HasParams.
         if (view.roi_rects.empty()) {
-            TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedRoiEmpty);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedRoiEmpty);
             chan->CommitEmpty(slot);
             continue;
         }
@@ -195,14 +222,16 @@ void SharedDetectorScheduler::InferLoop() {
         // have to repeat the check. detector_factory.cpp's current adapters
         // also guard internally; this is belt-and-braces.
         if (!chan->Context()) {
-            TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedCtxNull);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedCtxNull);
             chan->CommitEmpty(slot);
             continue;
         }
 
+        ScaleViewToFrame(view, slot->width, slot->height);
+
         DetectionResult result;
         int n = 0;
-        TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);
         try {
             n = detector_->Detect(
                 chan->Context(),
@@ -213,14 +242,17 @@ void SharedDetectorScheduler::InferLoop() {
                 result);
         } catch (...) {
             // spec §9: detector exception must not take the channel down.
-            TimingRecorder::Instance().ClearInferTimestamp();
-            TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::DroppedDetectError);
+            if (kEnableTimingLog) {
+                TimingRecorder::Instance().ClearInferTimestamp();
+                TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::DroppedDetectError);
+            }
             chan->CommitError(slot);
             continue;
         }
-        TimingRecorder::Instance().ClearInferTimestamp();
-
-        TimingRecorder::Instance().MarkDetectDone(slot->timestamp);
+        if (kEnableTimingLog) {
+            TimingRecorder::Instance().ClearInferTimestamp();
+            TimingRecorder::Instance().MarkDetectDone(slot->timestamp);
+        }
 
         if (n > 0) {
             chan->CommitResult(slot,
@@ -228,7 +260,7 @@ void SharedDetectorScheduler::InferLoop() {
                                result.rois_count,
                                result.node_count);
         } else {
-            TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedNoDetection);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedNoDetection);
             chan->CommitEmpty(slot);
         }
     }
@@ -256,23 +288,23 @@ void SharedDetectorScheduler::PreLoop() {
         ParamSnapshot::View view;
         if (!chan->TryAcquireWork(slot, view)) continue;
 
-        TimingRecorder::Instance().MarkInferQueueOut(slot->timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().MarkInferQueueOut(slot->timestamp);
 
         if (view.roi_rects.empty()) {
-            TimingRecorder::Instance().Flush(slot->timestamp,
-                TimingRecorder::FrameState::SkippedRoiEmpty);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedRoiEmpty);
             chan->CommitEmpty(slot);
             continue;
         }
         if (!chan->Context()) {
-            TimingRecorder::Instance().Flush(slot->timestamp,
-                TimingRecorder::FrameState::SkippedCtxNull);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedCtxNull);
             chan->CommitEmpty(slot);
             continue;
         }
 
+        ScaleViewToFrame(view, slot->width, slot->height);
+
         int dslot = -1;
-        TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().SetInferTimestamp(slot->timestamp);
         try {
             dslot = detector_->Phase1Prepare(
                 chan->Context(),
@@ -281,13 +313,14 @@ void SharedDetectorScheduler::PreLoop() {
                 view.original_roi_points,
                 view.params);
         } catch (...) {
-            TimingRecorder::Instance().ClearInferTimestamp();
-            TimingRecorder::Instance().Flush(slot->timestamp,
-                TimingRecorder::FrameState::DroppedDetectError);
+            if (kEnableTimingLog) {
+                TimingRecorder::Instance().ClearInferTimestamp();
+                TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::DroppedDetectError);
+            }
             chan->CommitError(slot);
             continue;
         }
-        TimingRecorder::Instance().ClearInferTimestamp();
+        if (kEnableTimingLog) TimingRecorder::Instance().ClearInferTimestamp();
 
         if (dslot == -2) {
             // Pool was closed mid-acquire. The shutdown signal: bail out
@@ -297,7 +330,7 @@ void SharedDetectorScheduler::PreLoop() {
             break;
         }
 
-        TimingRecorder::Instance().MarkPreToGpuQueueIn(slot->timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().MarkPreToGpuQueueIn(slot->timestamp);
 
         PreToGpuItem item;
         item.channel = chan;
@@ -308,9 +341,23 @@ void SharedDetectorScheduler::PreLoop() {
 
         // Spin-with-sleep instead of blocking push: the queue cap is small
         // and we want to notice running_=false promptly during shutdown.
+        // TryPushRef leaves `item` intact on failure — a by-value TryPush
+        // would move the view out even when the queue is full, and the
+        // retry would push an item with empty roi_rects (ROI filter lost).
+        bool pushed = false;
         while (running_.load(std::memory_order_acquire)) {
-            if (pre_to_gpu_q_.TryPush(std::move(item))) break;
+            if (pre_to_gpu_q_.TryPushRef(item)) {
+                pushed = true;
+                break;
+            }
             std::this_thread::sleep_for(milliseconds(1));
+        }
+        if (!pushed) {
+            // Shutdown while still holding the frame slot — release it so the
+            // channel pool stays balanced. The detector pool slot (dslot) is
+            // left as-is: ClosePipelinedPool has already been called on this
+            // path and the whole pool is being torn down.
+            chan->CommitError(slot);
         }
     }
 }
@@ -326,26 +373,26 @@ void SharedDetectorScheduler::GpuLoop() {
             continue;
         }
 
-        TimingRecorder::Instance().MarkPreToGpuQueueOut(item.timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().MarkPreToGpuQueueOut(item.timestamp);
 
         // Stride-skipped (or invalid input) frames carry detector_slot < 0
         // so GpuLoop bypasses the detector entirely; the dispatch_q still
         // gets a CommitEmpty in arrival order, preserving per-channel FIFO.
         if (item.detector_slot < 0) {
-            TimingRecorder::Instance().Flush(item.timestamp,
-                TimingRecorder::FrameState::SkippedNoDetection);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(item.timestamp, TimingRecorder::FrameState::SkippedNoDetection);
             item.channel->CommitEmpty(item.slot);
             continue;
         }
 
-        TimingRecorder::Instance().SetInferTimestamp(item.timestamp);
+        if (kEnableTimingLog) TimingRecorder::Instance().SetInferTimestamp(item.timestamp);
         try {
             detector_->Phase2Gpu(item.channel->Context(), item.detector_slot);
         } catch (...) {
             // Phase2Gpu released the detector pool slot before rethrowing.
-            TimingRecorder::Instance().ClearInferTimestamp();
-            TimingRecorder::Instance().Flush(item.timestamp,
-                TimingRecorder::FrameState::DroppedDetectError);
+            if (kEnableTimingLog) {
+                TimingRecorder::Instance().ClearInferTimestamp();
+                TimingRecorder::Instance().Flush(item.timestamp, TimingRecorder::FrameState::DroppedDetectError);
+            }
             item.channel->CommitError(item.slot);
             continue;
         }
@@ -362,14 +409,17 @@ void SharedDetectorScheduler::GpuLoop() {
                 result);
         } catch (...) {
             // Phase3Post released the detector pool slot before rethrowing.
-            TimingRecorder::Instance().ClearInferTimestamp();
-            TimingRecorder::Instance().Flush(item.timestamp,
-                TimingRecorder::FrameState::DroppedDetectError);
+            if (kEnableTimingLog) {
+                TimingRecorder::Instance().ClearInferTimestamp();
+                TimingRecorder::Instance().Flush(item.timestamp, TimingRecorder::FrameState::DroppedDetectError);
+            }
             item.channel->CommitError(item.slot);
             continue;
         }
-        TimingRecorder::Instance().ClearInferTimestamp();
-        TimingRecorder::Instance().MarkDetectDone(item.timestamp);
+        if (kEnableTimingLog) {
+            TimingRecorder::Instance().ClearInferTimestamp();
+            TimingRecorder::Instance().MarkDetectDone(item.timestamp);
+        }
 
         if (n > 0) {
             item.channel->CommitResult(item.slot,
@@ -377,8 +427,7 @@ void SharedDetectorScheduler::GpuLoop() {
                                        result.rois_count,
                                        result.node_count);
         } else {
-            TimingRecorder::Instance().Flush(item.timestamp,
-                TimingRecorder::FrameState::SkippedNoDetection);
+            if (kEnableTimingLog) TimingRecorder::Instance().Flush(item.timestamp, TimingRecorder::FrameState::SkippedNoDetection);
             item.channel->CommitEmpty(item.slot);
         }
     }

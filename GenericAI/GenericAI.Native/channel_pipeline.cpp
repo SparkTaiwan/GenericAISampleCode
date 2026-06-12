@@ -1,14 +1,19 @@
 #include "pch.h"
 #include "channel_pipeline.h"
+#include "gai_config.h"
+#include "host_log.h"
 #include "timing_recorder.h"
 
 #include <chrono>
 #include <iostream>
+#include <string>
 #include <utility>
 
 namespace gai {
 
 namespace {
+// Same family of trade-off as C# ChannelHandle's EncodeQueueCapacity / SendQueueCapacity:
+// small caps keep stop-stream-to-callback-stop latency tight at the cost of less burst absorption.
 constexpr std::size_t kPoolSlots        = 2;
 constexpr std::size_t kInferQueueCap    = 2;
 constexpr std::size_t kDispatchQueueCap = 2;
@@ -65,9 +70,16 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
         if (s.image_width > 0 && s.image_height > 0 &&
             pool_ &&
             static_cast<std::size_t>(s.image_width) * s.image_height * 3 / 2 != pool_->SlotCapacity()) {
-            std::cout << "[channel " << port_ << "] SetParameters reports "
-                      << s.image_width << "x" << s.image_height
-                      << " but pool is locked to the first resolution; ignoring resize." << std::endl;
+            // Unconditional: the pool stays at the first resolution, so frames
+            // larger than it will be dropped wholesale by MmfReader — the
+            // operator needs to see why detection went quiet.
+            const std::string msg =
+                "[channel " + std::to_string(port_) + "] SetParameters reports " +
+                std::to_string(s.image_width) + "x" + std::to_string(s.image_height) +
+                " but pool is locked to the first resolution; ignoring resize."
+                " Restart the channel to change resolution.";
+            std::cerr << msg << std::endl;
+            HostLog(HostLogLevel::Warn, msg);
         }
         return;
     }
@@ -81,15 +93,21 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
     mmf_reader_->Start();
     has_params_.store(true, std::memory_order_release);
 
-    std::cout << "[channel " << port_ << "] pool sized to "
-              << s.image_width << "x" << s.image_height
-              << " (" << kPoolSlots << " slots x " << cap << " bytes = "
-              << (kPoolSlots * cap) << " bytes)" << std::endl;
+    // Host log gets this unconditionally: the locked pool capacity is what
+    // every later "dropping frames" warning compares against.
+    const std::string msg =
+        "[channel " + std::to_string(port_) + "] pool sized to " +
+        std::to_string(s.image_width) + "x" + std::to_string(s.image_height) +
+        " (" + std::to_string(kPoolSlots) + " slots x " + std::to_string(cap) +
+        " bytes = " + std::to_string(kPoolSlots * cap) + " bytes)";
+    HostLog(HostLogLevel::Info, msg);
+    if (kEnableTimingLog) {
+        std::cout << msg << std::endl;
+    }
 }
 
 void ChannelPipeline::SetCallback(GAI_DetectionCallback cb) {
-    std::lock_guard<std::mutex> lk(cb_mtx_);
-    callback_ = cb;
+    callback_.store(cb, std::memory_order_release);
 }
 
 void ChannelPipeline::InitContext(IDetector* shared_detector) {
@@ -110,19 +128,31 @@ bool ChannelPipeline::TryAcquireWork(FrameSlot*& slot, ParamSnapshot::View& view
 
 void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
                                    int rois_count, int node_count) {
+    using namespace std::chrono;
     if (!slot) return;
-    std::uint64_t ts = slot->timestamp;
+    const std::uint64_t ts = slot->timestamp;
     ChannelDetectionPacket pkt;
     pkt.frame      = slot;
     pkt.rois_flat  = std::move(flat);
     pkt.rois_count = rois_count;
     pkt.node_count = node_count;
-    if (!dispatch_q_ || !dispatch_q_->TryPush(std::move(pkt))) {
-        TimingRecorder::Instance().Flush(ts, TimingRecorder::FrameState::DroppedDispatchQFull);
-        if (pool_) pool_->Release(slot);
-    } else {
-        TimingRecorder::Instance().MarkDispatchQueueIn(ts);
+
+    // Spin-with-sleep instead of dropping: pressure backs up through this
+    // channel's dispatch_q -> BufferPool -> MmfReader -> share memory
+    // writer. Caller (InferLoop / GpuLoop) is a single shared thread, so
+    // this also stalls every other channel's detection -- accepted by
+    // design: a wedged callback halts the whole detector and resumes
+    // when the downstream drains. TryPushRef leaves `pkt` intact on
+    // failure so we can retry the same payload.
+    while (running_.load(std::memory_order_acquire)) {
+        if (dispatch_q_ && dispatch_q_->TryPushRef(pkt)) {
+            if (kEnableTimingLog) TimingRecorder::Instance().MarkDispatchQueueIn(ts);
+            return;
+        }
+        std::this_thread::sleep_for(milliseconds(1));
     }
+    // Shutdown while still holding the slot -- release to avoid leak.
+    if (pool_) pool_->Release(slot);
 }
 
 void ChannelPipeline::CommitEmpty(FrameSlot* slot) {
@@ -143,15 +173,13 @@ void ChannelPipeline::DispatchLoop() {
         if (!dispatch_q_ || !dispatch_q_->PopWait(pkt, milliseconds(100))) continue;
         if (!pkt.frame) continue;
 
-        TimingRecorder::Instance().MarkDispatchQueueOut(pkt.frame->timestamp);
-        TimingRecorder::Instance().Flush(pkt.frame->timestamp, TimingRecorder::FrameState::Ok);
+        if (kEnableTimingLog) {
+            TimingRecorder::Instance().MarkDispatchQueueOut(pkt.frame->timestamp);
+            TimingRecorder::Instance().Flush(pkt.frame->timestamp, TimingRecorder::FrameState::Ok);
+        }
 
         if (pkt.rois_count > 0) {
-            GAI_DetectionCallback cb = nullptr;
-            {
-                std::lock_guard<std::mutex> lk(cb_mtx_);
-                cb = callback_;
-            }
+            auto cb = callback_.load(std::memory_order_acquire);
             if (cb) {
                 cb(port_,
                    pkt.frame->width, pkt.frame->height,

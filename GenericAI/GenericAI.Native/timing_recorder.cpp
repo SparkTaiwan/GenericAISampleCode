@@ -246,7 +246,8 @@ void TimingRecorder::SweeperLoop() {
 void TimingRecorder::WriteLine(std::uint64_t timestamp, const FrameRecord& r, FrameState state) {
     // Suppress lines that would print zero segment values — pool/inferq full
     // drops have only t_mmf and nothing else, so every s_xxx column would be
-    // blank. The drop is still counted in frames_dropped_ on the C++ side.
+    // blank. Pool exhaustion is a stall rather than a true drop and is counted
+    // by MmfReader::pool_stall_count_.
     bool any_segment = r.has_inferq_in || r.has_inferq_out || r.has_detect_done ||
                        r.has_dispatchq_in || r.has_dispatchq_out;
     if (!any_segment) return;
