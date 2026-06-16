@@ -12,8 +12,8 @@ namespace gai {
 // model_path is ignored.
 //
 // Returns nullptr if the requested detector cannot be constructed (model
-// missing, ONNX session build failed, etc.). Callers are expected to surface
-// that as exit code 4/5.
-std::unique_ptr<IDetector> CreateDetector(DetectorKind kind, const std::string& model_path);
+// missing, ONNX session build failed, etc.); on failure `err` is filled with a
+// human-readable reason so the host can report it on /Alive instead of crashing.
+std::unique_ptr<IDetector> CreateDetector(DetectorKind kind, const std::string& model_path, std::string& err);
 
 }  // namespace gai

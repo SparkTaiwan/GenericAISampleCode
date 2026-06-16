@@ -136,22 +136,26 @@ private:
 
 }  // namespace
 
-std::unique_ptr<IDetector> CreateDetector(DetectorKind kind, const std::string& model_path) {
+std::unique_ptr<IDetector> CreateDetector(DetectorKind kind, const std::string& model_path, std::string& err) {
+    err.clear();
     try {
         switch (kind) {
             case DetectorKind::Motion:
                 return std::unique_ptr<IDetector>(new MotionAdapter());
             case DetectorKind::Person:
                 if (model_path.empty()) {
-                    std::cerr << "[GAI] Person detector requires model=<path>" << std::endl;
+                    err = "Person/object detector requires a model path";
+                    std::cerr << "[GAI] " << err << std::endl;
                     return nullptr;
                 }
                 return std::unique_ptr<IDetector>(new PersonAdapter(model_path));
         }
     } catch (const std::exception& e) {
-        std::cerr << "[GAI] Detector construction failed: " << e.what() << std::endl;
+        err = e.what();
+        std::cerr << "[GAI] Detector construction failed: " << err << std::endl;
     } catch (...) {
-        std::cerr << "[GAI] Detector construction failed (unknown)" << std::endl;
+        err = "Detector construction failed (unknown error)";
+        std::cerr << "[GAI] " << err << std::endl;
     }
     return nullptr;
 }

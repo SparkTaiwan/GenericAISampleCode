@@ -114,8 +114,23 @@ namespace GenericAI.App
                     }
                     else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/Alive")
                     {
-                        await Write(resp, 200, "text/plain", "");
-                        FileLogger.Info($"Alive received from {remote}");
+                        // The process is alive (HTTP 200) but the body reports health:
+                        //   {"status":"ok"}                         -> functional
+                        //   {"status":"error","message":"<reason>"} -> degraded (e.g.
+                        //   the detector/model failed to load). The recorder reads this
+                        //   to surface the error instead of pointlessly restarting us.
+                        string aliveBody;
+                        if (HealthState.IsHealthy)
+                        {
+                            aliveBody = "{\"status\":\"ok\"}";
+                        }
+                        else
+                        {
+                            aliveBody = "{\"status\":\"error\",\"message\":"
+                                + JsonConvert.SerializeObject(HealthState.Error) + "}";
+                        }
+                        await Write(resp, 200, "application/json", aliveBody);
+                        FileLogger.Info($"Alive received from {remote} (healthy={HealthState.IsHealthy})");
                     }
                     else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/GetLicense")
                     {

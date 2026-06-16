@@ -14,6 +14,16 @@ namespace GenericAI.App
         public bool PortFromArgs { get; private set; }
         public int ChannelCount { get; private set; } = 1;
 
+        // Echoed from the recorder (spec v1.3). "single" = one process serves
+        // channel_count channels; "multi" = one process per channel. Accepted so
+        // the recorder can pass mode=single without the exe rejecting the arg.
+        public string Mode { get; private set; } = "multi";
+
+        // Detector requested by the recorder. This reference wrapper only
+        // implements Motion, so the value is accepted for protocol compatibility
+        // and otherwise ignored.
+        public string Detector { get; private set; } = "motion";
+
         public static bool TryParse(string[] args, out CommandLineArgs parsed, out string error)
         {
             parsed = new CommandLineArgs();
@@ -53,6 +63,32 @@ namespace GenericAI.App
                         parsed.ChannelCount = cc;
                         break;
 
+                    case "mode":
+                        {
+                            string m = val.ToLowerInvariant();
+                            if (m != "single" && m != "multi")
+                            {
+                                error = $"invalid mode: {val} (expected single|multi)";
+                                return false;
+                            }
+                            parsed.Mode = m;
+                        }
+                        break;
+
+                    case "detector":
+                        {
+                            // Motion-only reference wrapper: accept the known values
+                            // for compatibility but do not act on them.
+                            string d = val.ToLowerInvariant();
+                            if (d != "motion" && d != "objectdetection" && d != "objdetection" && d != "person")
+                            {
+                                error = $"invalid detector: {val}";
+                                return false;
+                            }
+                            parsed.Detector = d;
+                        }
+                        break;
+
                     default:
                         error = $"unknown key: {key}";
                         return false;
@@ -64,7 +100,9 @@ namespace GenericAI.App
 
         public static string Usage()
         {
-            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>]";
+            return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>]" +
+                   " [mode=single|multi] [detector=motion]" +
+                   "\n(this reference wrapper is Motion-only; mode/detector are accepted for compatibility)";
         }
     }
 }

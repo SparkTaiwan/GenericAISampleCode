@@ -113,7 +113,15 @@ namespace GenericAI.App
                     }
                     else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/Alive")
                     {
-                        await Write(resp, 200, "text/plain", "");
+                        // The process is alive (HTTP 200); the body reports health:
+                        //   {"status":"ok"}                         -> functional
+                        //   {"status":"error","message":"<reason>"} -> degraded
+                        // The recorder reads this to surface errors instead of
+                        // restarting us. This Motion-only wrapper is always "ok".
+                        string aliveBody = HealthState.IsHealthy
+                            ? "{\"status\":\"ok\"}"
+                            : "{\"status\":\"error\",\"message\":" + JsonConvert.SerializeObject(HealthState.Error) + "}";
+                        await Write(resp, 200, "application/json", aliveBody);
                     }
                     else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/GetLicense")
                     {

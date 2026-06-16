@@ -16,6 +16,18 @@ namespace GenericAI.App
         public int EncodeWorkers { get; private set; } = 2;
         public int SendWorkers { get; private set; } = 2;
 
+        // Process mode echoed from the recorder (spec v1.3). "single" = this one
+        // process serves channel_count channels on consecutive ports; "multi" =
+        // one process per channel (channel_count stays 1). Informational here —
+        // channel_count already drives the actual topology — but accepted so the
+        // recorder can pass `mode=single` per spec without the exe rejecting it.
+        public string Mode { get; private set; } = "multi";
+
+        // Detector backend chosen at runtime: 0 = Motion, 1 = Person (object
+        // detection). -1 means "not specified" -> native falls back to the
+        // compile-time default in gai_config.h.
+        public int DetectorKind { get; private set; } = -1;
+
         public static bool TryParse(string[] args, out CommandLineArgs parsed, out string error)
         {
             parsed = new CommandLineArgs();
@@ -73,6 +85,35 @@ namespace GenericAI.App
                         parsed.SendWorkers = sw;
                         break;
 
+                    case "mode":
+                        {
+                            string m = val.ToLowerInvariant();
+                            if (m != "single" && m != "multi")
+                            {
+                                error = $"invalid mode: {val} (expected single|multi)";
+                                return false;
+                            }
+                            parsed.Mode = m;
+                        }
+                        break;
+
+                    case "detector":
+                        switch (val.ToLowerInvariant())
+                        {
+                            case "motion":
+                                parsed.DetectorKind = (int)DetectorType.Motion;
+                                break;
+                            case "person":
+                            case "objectdetection":
+                            case "objdetection":
+                                parsed.DetectorKind = (int)DetectorType.Person;
+                                break;
+                            default:
+                                error = $"invalid detector: {val} (expected motion|objectdetection)";
+                                return false;
+                        }
+                        break;
+
                     default:
                         error = $"unknown key: {key}";
                         return false;
@@ -85,8 +126,9 @@ namespace GenericAI.App
         public static string Usage()
         {
             return "Usage: GenericAI.exe [port=<int>] [channel_count=<N>]" +
+                   " [mode=single|multi] [detector=motion|objectdetection]" +
                    " [encode_workers=<N>] [send_workers=<M>]" +
-                   "\n(detector type is a compile-time flag in GenericAI.Native/gai_config.h)";
+                   "\n(detector defaults to the compile-time flag in GenericAI.Native/gai_config.h when omitted)";
         }
     }
 }

@@ -47,6 +47,7 @@
   <ItemGroup>
     <Compile Include="ChannelHandle.cs" />
     <Compile Include="CommandLineArgs.cs" />
+    <Compile Include="HealthState.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Http\HttpEnvelope.cs" />
     <Compile Include="Http\HttpListenerHost.cs" />

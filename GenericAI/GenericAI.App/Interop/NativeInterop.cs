@@ -49,8 +49,11 @@ namespace GenericAI.App
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         public delegate void LogCallbackFunction(int level, IntPtr message);
 
+        // detectorKind: 0 = Motion, 1 = Person (object detection); -1 (or any
+        // out-of-range value) falls back to the native compile-time default
+        // in gai_config.h. Lets the recorder pick the backend via `detector=`.
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int GAI_InitializeChannels(int[] ports, int count);
+        public static extern int GAI_InitializeChannels(int[] ports, int count, int detectorKind);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_SetChannelParameters(int port, ref SettingParameters parameters);
@@ -66,5 +69,10 @@ namespace GenericAI.App
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern int GAI_GetBackend(System.Text.StringBuilder buf, int bufLen);
+
+        // Last init error (e.g. model load failure). Returns 0 when healthy. Used
+        // after a degraded init (GAI_InitializeChannels == 5) to report on /Alive.
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern int GAI_GetInitError(System.Text.StringBuilder buf, int bufLen);
     }
 }

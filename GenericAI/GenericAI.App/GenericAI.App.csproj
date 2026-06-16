@@ -52,6 +52,7 @@
     <Compile Include="CommandLineArgs.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Diagnostics\ConsoleLog.cs" />
+    <Compile Include="Diagnostics\HealthState.cs" />
     <Compile Include="Diagnostics\FileLogger.cs" />
     <Compile Include="Diagnostics\TimingRecorder.cs" />
     <Compile Include="Http\HttpEnvelope.cs" />

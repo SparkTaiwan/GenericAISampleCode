@@ -65,7 +65,10 @@ namespace GenericAI.App
 
             FileLogger.Init(parsed.Port);
             TimingRecorder.Instance.Init(parsed.Port);
-            FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
+            string detectorLabel = parsed.DetectorKind < 0
+                ? "<compile-time default>"
+                : ((DetectorType)parsed.DetectorKind).ToString();
+            FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, mode={parsed.Mode}, detector={detectorLabel}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (parsed.PortFromArgs)
             {
                 ConsoleLog.WriteLine($"Port number: {parsed.Port}");
@@ -121,47 +124,66 @@ namespace GenericAI.App
                 // (exports.cpp lock_guard + null check), so an extra Deinit on
                 // failed init is a no-op.
                 s_nativeInit = true;
-                int rc = NativeInterop.GAI_InitializeChannels(ports, n);
-                if (rc != 0)
+                int rc = NativeInterop.GAI_InitializeChannels(ports, n, parsed.DetectorKind);
+
+                // rc == 5: degraded — the detector could not initialise (e.g. the
+                // ONNX model is missing). Do NOT exit: keep the HTTP listeners up so
+                // the recorder learns the reason from /Alive, instead of the process
+                // crashing and the recorder pointlessly restarting it.
+                bool degraded = (rc == 5);
+                if (rc != 0 && !degraded)
                 {
                     FileLogger.Error($"GAI_InitializeChannels returned {rc}");
                     return ExitNativeFailed;
                 }
 
-                System.Text.StringBuilder backendBuf = new System.Text.StringBuilder(64);
-                NativeInterop.GAI_GetBackend(backendBuf, backendBuf.Capacity);
-                string backend = backendBuf.ToString();
-                if (string.IsNullOrEmpty(backend)) backend = "<unknown>";
-                VerboseConsole($"[INFO] detector backend = {backend}");
-                FileLogger.Info($"detector backend = {backend}");
-
-                DropCounter    drops      = new DropCounter();
-                HttpPostClient postClient = new HttpPostClient();
-
-                _dispatcher = new FrameDispatcher(_byChannelId, drops);
-                _dispatcher.Register();
-                ConsoleLog.WriteLine("register Callback");
-
-                ChannelHandle[] channelsByIdx = _channels.ToArray();
-                BlockingCollection<RawDetection>[] allEncodeQs = channelsByIdx.Select(c => c.EncodeQ).ToArray();
-
                 _shutdownCts = new CancellationTokenSource();
 
-                _encodeTasks = new List<Task>();
-                for (int i = 0; i < parsed.EncodeWorkers; i++)
+                if (degraded)
                 {
-                    EncodeWorker w = new EncodeWorker(allEncodeQs, channelsByIdx, drops);
-                    _encodeTasks.Add(w.RunAsync(_shutdownCts.Token));
+                    System.Text.StringBuilder errBuf = new System.Text.StringBuilder(1024);
+                    NativeInterop.GAI_GetInitError(errBuf, errBuf.Capacity);
+                    string em = errBuf.ToString();
+                    if (string.IsNullOrEmpty(em)) em = "detector initialization failed";
+                    HealthState.SetError(em);
+                    ConsoleLog.ErrorLine($"DEGRADED: detector init failed; /Alive will report error: {em}");
+                    FileLogger.Error($"DEGRADED: detector init failed; serving /Alive error, no detection: {em}");
                 }
-
-                _sendTasks = new List<Task>();
-                for (int i = 0; i < parsed.SendWorkers; i++)
+                else
                 {
-                    SendWorker w = new SendWorker(channelsByIdx, postClient, drops);
-                    _sendTasks.Add(w.RunAsync(_shutdownCts.Token));
-                }
+                    System.Text.StringBuilder backendBuf = new System.Text.StringBuilder(64);
+                    NativeInterop.GAI_GetBackend(backendBuf, backendBuf.Capacity);
+                    string backend = backendBuf.ToString();
+                    if (string.IsNullOrEmpty(backend)) backend = "<unknown>";
+                    VerboseConsole($"[INFO] detector backend = {backend}");
+                    FileLogger.Info($"detector backend = {backend}");
 
-                _ = Task.Run(() => DropReporterAsync(drops, _shutdownCts.Token));
+                    DropCounter    drops      = new DropCounter();
+                    HttpPostClient postClient = new HttpPostClient();
+
+                    _dispatcher = new FrameDispatcher(_byChannelId, drops);
+                    _dispatcher.Register();
+                    ConsoleLog.WriteLine("register Callback");
+
+                    ChannelHandle[] channelsByIdx = _channels.ToArray();
+                    BlockingCollection<RawDetection>[] allEncodeQs = channelsByIdx.Select(c => c.EncodeQ).ToArray();
+
+                    _encodeTasks = new List<Task>();
+                    for (int i = 0; i < parsed.EncodeWorkers; i++)
+                    {
+                        EncodeWorker w = new EncodeWorker(allEncodeQs, channelsByIdx, drops);
+                        _encodeTasks.Add(w.RunAsync(_shutdownCts.Token));
+                    }
+
+                    _sendTasks = new List<Task>();
+                    for (int i = 0; i < parsed.SendWorkers; i++)
+                    {
+                        SendWorker w = new SendWorker(channelsByIdx, postClient, drops);
+                        _sendTasks.Add(w.RunAsync(_shutdownCts.Token));
+                    }
+
+                    _ = Task.Run(() => DropReporterAsync(drops, _shutdownCts.Token));
+                }
 
                 VerboseConsole("");
                 foreach (ChannelHandle h in _channels)

@@ -19,11 +19,52 @@ namespace {
 std::mutex g_lifecycle_mtx;
 std::unique_ptr<gai::SharedDetectorScheduler> g_scheduler;
 
+// Last initialization error (e.g. detector/model load failure). Exposed to the
+// C# host via GAI_GetInitError so it can report it on /Alive instead of the
+// process crashing.
+std::mutex g_init_error_mtx;
+std::string g_init_error;
+
+// Directory of the running exe (ANSI/CP_ACP, to round-trip through detector_person's
+// Widen()). Empty on failure.
+std::string ExeDir() {
+    wchar_t wbuf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, wbuf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::string();
+    std::wstring w(wbuf, n);
+    size_t slash = w.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return std::string();
+    std::wstring wdir = w.substr(0, slash);
+    int len = WideCharToMultiByte(CP_ACP, 0, wdir.c_str(), (int)wdir.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string dir(len, '\0');
+    WideCharToMultiByte(CP_ACP, 0, wdir.c_str(), (int)wdir.size(), &dir[0], len, nullptr, nullptr);
+    return dir;
+}
+
+// Resolve a (possibly relative) resource path against the exe's own directory so
+// it works regardless of the process working directory. The recorder spawns this
+// exe with an arbitrary CWD; a bare "models/yolo.onnx" would otherwise be looked
+// up under the recorder's CWD and fail.
+std::string ResolveAgainstExe(const std::string& path) {
+    // Already absolute? ("X:\..." or "\\server\..." or "/...")
+    if (path.size() >= 2 && (path[1] == ':' || path[0] == '\\' || path[0] == '/'))
+        return path;
+    std::string dir = ExeDir();
+    if (dir.empty()) return path;  // fall back to CWD-relative behavior
+    return dir + "\\" + path;
+}
+
 }  // namespace
 
 extern "C" {
 
-__declspec(dllexport) int __cdecl GAI_InitializeChannels(const int* ports, int count) {
+// detector_kind selects the active detector at runtime:
+//   0 = Motion, 1 = Person (object detection); any other value (e.g. -1)
+//   falls back to the compile-time gai::kDetectorKind in gai_config.h.
+// This lets the recorder spawn one built-in GenericAI.exe and pick the
+// backend via `detector=` on the command line instead of a rebuild.
+__declspec(dllexport) int __cdecl GAI_InitializeChannels(const int* ports, int count, int detector_kind) {
     std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
     if (g_scheduler) return 0;
     if (!ports || count <= 0) return 1;
@@ -39,9 +80,27 @@ __declspec(dllexport) int __cdecl GAI_InitializeChannels(const int* ports, int c
 
         gai::TimingRecorder::Instance().Init(ports[0]);
 
-        auto det = gai::CreateDetector(gai::kDetectorKind, gai::kDefaultModelPath);
-        // Person path needs a usable ONNX session; Motion never returns null.
-        if (!det) return 4;
+        gai::DetectorKind kind = gai::kDetectorKind;
+        if (detector_kind == static_cast<int>(gai::DetectorKind::Motion))
+            kind = gai::DetectorKind::Motion;
+        else if (detector_kind == static_cast<int>(gai::DetectorKind::Person))
+            kind = gai::DetectorKind::Person;
+        // else: keep compile-time default (gai::kDetectorKind).
+
+        // Resolve the model path against the exe's own folder so it loads no matter
+        // what the recorder set as the working directory.
+        const std::string modelPath = ResolveAgainstExe(gai::kDefaultModelPath);
+
+        std::string detErr;
+        auto det = gai::CreateDetector(kind, modelPath, detErr);
+        if (!det) {
+            // Degraded mode: the detector could not load (e.g. missing model). Do
+            // NOT crash — record the reason and return 5 so the host stays alive
+            // and reports it on /Alive. SetParameters will no-op (g_scheduler null).
+            std::lock_guard<std::mutex> elk(g_init_error_mtx);
+            g_init_error = detErr.empty() ? std::string("detector initialization failed") : detErr;
+            return 5;
+        }
 
         std::vector<std::unique_ptr<gai::ChannelPipeline>> chans;
         chans.reserve(static_cast<std::size_t>(count));
@@ -110,6 +169,28 @@ __declspec(dllexport) void __cdecl GAI_RegisterLogCallback(GAI_LogCallback cb) {
 // Writes "CPU" / "DirectML(0)" / "" into buf (null-terminated, ANSI). Returns
 // number of chars written (excluding NUL). Used by C# Program.cs to record
 // the active EP in the log file at startup.
+// Writes the last init error (e.g. model-load failure) into buf (null-terminated,
+// ANSI). Returns chars written (excluding NUL); 0 means no error (healthy). The
+// C# host calls this after a degraded (rc=5) init and serves it on /Alive.
+__declspec(dllexport) int __cdecl GAI_GetInitError(char* buf, int buf_len) {
+    if (!buf || buf_len <= 0) return 0;
+    try {
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(g_init_error_mtx);
+            msg = g_init_error;
+        }
+        std::size_t n = msg.size();
+        if (n >= static_cast<std::size_t>(buf_len)) n = static_cast<std::size_t>(buf_len) - 1;
+        std::memcpy(buf, msg.data(), n);
+        buf[n] = '\0';
+        return static_cast<int>(n);
+    } catch (...) {
+        buf[0] = '\0';
+        return 0;
+    }
+}
+
 __declspec(dllexport) int __cdecl GAI_GetBackend(char* buf, int buf_len) {
     if (!buf || buf_len <= 0) return 0;
     try {

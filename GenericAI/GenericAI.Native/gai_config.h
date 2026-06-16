@@ -5,7 +5,10 @@
 //  - DetectorKind::Motion  -> frame-difference motion detection (detector_motion.cpp)
 //  - DetectorKind::Person  -> ONNX person detection (detector_person.cpp, requires kDefaultModelPath to exist)
 //
-// To switch: edit this line -> rebuild -> restart the exe.
+// This is now only the DEFAULT: the host can override it at runtime via
+// `detector=motion|objectdetection` (CommandLineArgs -> GAI_InitializeChannels's
+// detector_kind). The value below applies only when the host passes no detector=
+// (detector_kind < 0). To change the default: edit -> rebuild -> restart the exe.
 // Matches the behavior of kDetectorMode in the old CSharp/SampleDLL/dllmain.cpp:19.
 namespace gai {
 
