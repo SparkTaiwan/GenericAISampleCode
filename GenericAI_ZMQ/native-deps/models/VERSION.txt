@@ -1,0 +1,25 @@
+YOLOX-M, FP16 ONNX export
+
+Source:
+  https://github.com/Megvii-BaseDetection/YOLOX
+  Model zoo (ONNX): https://github.com/Megvii-BaseDetection/YOLOX/tree/main/demo/ONNXRuntime
+  Paper: https://arxiv.org/abs/2107.08430
+
+How to populate this folder:
+  1. Download yolox_m.onnx from the model zoo above, or export from
+     yolox_m.pth using YOLOX's tools/export_onnx.py.
+  2. If the inference runtime needs FP16, convert with
+     onnxconverter-common.float16.convert_float_to_float16
+     (or any equivalent fp32 -> fp16 graph converter).
+  3. Rename to yolox_m_fp16.onnx and drop it in this folder.
+  4. Recompute the SHA-256 below:
+       PowerShell: Get-FileHash -Algorithm SHA256 .\yolox_m_fp16.onnx
+  5. LICENSE.md is the verbatim upstream Apache 2.0 text; ship it
+     alongside yolox_m_fp16.onnx (the csproj already copies both to
+     the output directory).
+
+License: Apache 2.0 (Megvii Inc., 2021-2022). See LICENSE.md.
+Citation (requested by upstream, not required by license):
+  Ge et al., "YOLOX: Exceeding YOLO Series in 2021", arXiv:2107.08430.
+
+yolox_m_fp16.onnx SHA-256: A0A3B9C94FAA5414D4F2F22C0A87B919A1C67CDA90986C21AB89CA385C1DD0C2
