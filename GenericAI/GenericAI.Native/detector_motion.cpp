@@ -47,16 +47,16 @@ int MotionDetector::Detect(MotionDetectorContext& ctx,
         }
 
         // Per-call tunables:
-        //   pixel_threshold = 8 + (threshold/100) * 32      -> 8..40 (non-zero floor
+        //   pixel_threshold = 8 + (threshold/100) * 12      -> 8..20 (non-zero floor
         //     so threshold=0 doesn't make every ±1 compression artifact register)
-        //   min_ratio       = 0.20 - (sensitivity/100) * 0.195  -> 0.005..0.20 of
+        //   min_ratio       = 0.10 - (sensitivity/100) * 0.095  -> 0.005..0.10 of
         //     each ROI's own area, so the same sensitivity behaves consistently on
         //     a 320x240 ROI and a 1920x1080 ROI (absolute pixel-count thresholds
         //     do not).
         const int t = max(0, min(100, params.threshold));
         const int sensitivity = max(0, min(100, params.sensitivity));
-        const int pixel_threshold = 8 + static_cast<int>((t / 100.0) * 32.0);
-        const float min_ratio = 0.20f - (sensitivity / 100.0f) * 0.195f;
+        const int pixel_threshold = 8 + static_cast<int>((t / 100.0) * 12.0);
+        const float min_ratio = 0.10f - (sensitivity / 100.0f) * 0.095f;
 
         const int y_size = width * height;
         if (y_size <= 0) return 0;
