@@ -11,6 +11,19 @@ namespace GenericAI.App
     {
         public string version { get; set; }
         public int port_num { get; set; }
+
+        // Per-class detection counts as metadata items: { "name": "<Class>__Count",
+        // "value": "<n>" } (spec §2.2/§3.1). The recorder treats a "__Count" suffix
+        // as a counting signal. Omitted when empty.
+        [JsonProperty("items", NullValueHandling = NullValueHandling.Ignore)]
+        public List<EnvelopeItem> items { get; set; }
+
+        internal sealed class EnvelopeItem
+        {
+            public string name { get; set; }
+            public string value { get; set; }
+        }
+
         // byte[] serialises as a base64 string under Newtonsoft — same wire
         // format as the previous Convert.ToBase64String path, minus the
         // intermediate base64 string allocation (LOH-sized for typical JPEGs).

@@ -50,6 +50,7 @@
   <ItemGroup>
     <Compile Include="ChannelHandle.cs" />
     <Compile Include="CommandLineArgs.cs" />
+    <Compile Include="SettingsSchema.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Diagnostics\ConsoleLog.cs" />
     <Compile Include="Diagnostics\HealthState.cs" />

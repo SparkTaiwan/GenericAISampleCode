@@ -15,6 +15,7 @@ namespace GenericAI.App
         public NativeInterop.ROI[] RoisFlat;  // length = RoisCount * NodeCount
         public int RoisCount;
         public int NodeCount;
+        public int[] ClassCounts;     // per NativeInterop.SupportedClasses index; null => none
         public int Port;              // routing key for shared EncodeWorker/SendWorker pool (spec §7: channel_id == port)
     }
 
@@ -64,7 +65,8 @@ namespace GenericAI.App
             int channelId, int width, int height,
             IntPtr frameI420, int frameSize,
             ulong timestamp,
-            IntPtr roisFlat, int roisCount, int nodeCount)
+            IntPtr roisFlat, int roisCount, int nodeCount,
+            IntPtr classCounts, int classCountsLen)
         {
             // Tracks pool ownership: non-null means we hold a rented buffer
             // that has not yet been handed to EncodeQ. Set back to null after
@@ -99,6 +101,15 @@ namespace GenericAI.App
                     for (int k = 0; k < total; k++) roiArr[k] = src[k];
                 }
 
+                // Per-supported-class counts (SupportedClasses order). Copied off the
+                // native buffer before returning, like the frame bytes.
+                int[] classCountArr = null;
+                if (classCounts != IntPtr.Zero && classCountsLen > 0)
+                {
+                    classCountArr = new int[classCountsLen];
+                    Marshal.Copy(classCounts, classCountArr, 0, classCountsLen);
+                }
+
                 RawDetection raw = new RawDetection
                 {
                     Width = width,
@@ -109,6 +120,7 @@ namespace GenericAI.App
                     RoisFlat = roiArr,
                     RoisCount = roisCount,
                     NodeCount = nodeCount,
+                    ClassCounts = classCountArr,
                     Port = channelId,
                 };
 
@@ -121,10 +133,9 @@ namespace GenericAI.App
                 managed = null;  // ownership transferred to EncodeWorker
                 TimingRecorder.Instance.MarkEncodeQueueIn(timestamp);
 
-                // Visible on the console (ConsoleLog is on by default): a detection
-                // fired. timestamp is the value that arrived with the frame (MMF or
-                // ZMQ header) and is echoed back in the result, so it round-trips.
-                ConsoleLog.WriteLine($"[DETECT] ch={channelId} ts={timestamp} rois={roisCount} {width}x{height}");
+                // Detection fired. Kept to the file log only — the per-frame
+                // console line was too noisy. timestamp is the value that arrived
+                // with the frame (MMF or ZMQ header) and is echoed back in the result.
                 FileLogger.Info($"Detection callback: ch={channelId} size={frameSize} w={width} h={height} rois={roisCount} nodes={nodeCount} ts={timestamp}");
             }
             catch (InvalidOperationException)

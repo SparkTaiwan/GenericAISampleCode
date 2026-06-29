@@ -30,6 +30,7 @@ struct ChannelDetectionPacket {
     std::vector<GAI_Roi> rois_flat;
     int rois_count = 0;
     int node_count = 0;
+    int class_counts[kNumSupportedClasses] = { 0 };  // per supported-class count
 };
 
 // Per-channel pipeline: holds the MMF reader, buffer pool, queues, params
@@ -62,6 +63,10 @@ public:
     void Join();
 
     void ApplyParameters(const GAI_Settings& s);
+    // Per-channel ai_settings (GAI_SetChannelAiSettings). Merged into the per-call
+    // DetectorParams so each channel can react differently: object detection uses
+    // confidence + classes; motion uses sensitivity + threshold.
+    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold);
     void SetCallback(GAI_DetectionCallback cb);
 
     int Port() const { return port_; }
@@ -84,7 +89,8 @@ public:
     std::size_t PendingInferDepth() const { return infer_q_ ? infer_q_->Size() : 0; }
     bool   TryAcquireWork(FrameSlot*& slot, ParamSnapshot::View& view);
     void   CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
-                        int rois_count, int node_count);
+                        int rois_count, int node_count,
+                        const int* class_counts);
     void   CommitEmpty(FrameSlot* slot);
     void   CommitError(FrameSlot* slot);
 

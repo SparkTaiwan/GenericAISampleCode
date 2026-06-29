@@ -140,6 +140,22 @@ __declspec(dllexport) int __cdecl GAI_SetChannelParameters(int port, const GAI_S
     return 0;
 }
 
+// Per-channel ai_settings (spec §5). Scalars so it needs no ABI struct change.
+// Object detection uses confidence (0..1; <0 => threshold-derived) + class_mask
+// (bitmask over class_table.h index; <0 => all). Motion uses sensitivity + threshold
+// (0..100; <0 => keep per-ROI value). Each channel keeps its own, so channels react
+// differently. Unused keys for a given detector are passed as <0.
+__declspec(dllexport) int __cdecl GAI_SetChannelAiSettings(
+        int port, float confidence, int class_mask, int sensitivity, int threshold) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (!g_scheduler) return 1;
+    auto* c = g_scheduler->FindByPort(port);
+    if (!c) return 1;
+    try { c->ApplyAiSettings(confidence, class_mask, sensitivity, threshold); }
+    catch (...) { return 1; }
+    return 0;
+}
+
 __declspec(dllexport) void __cdecl GAI_RegisterCallback(GAI_DetectionCallback cb) {
     std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
     if (!g_scheduler) return;

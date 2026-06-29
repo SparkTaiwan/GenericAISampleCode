@@ -2,6 +2,7 @@
 
 #include "gai_abi.h"
 #include "roi_geometry.h"
+#include "class_table.h"
 
 #include <memory>
 #include <string>
@@ -16,6 +17,9 @@ struct DetectionResult {
     std::vector<GAI_Roi> flattened_points;
     int rois_count = 0;
     int node_count = 0;
+    // Per supported-class detection count (class_table.h order); fed to the C ABI
+    // callback so the host can emit "<class>___Count" items.
+    int class_counts[kNumSupportedClasses] = { 0 };
 };
 
 enum class DetectorKind : int {
@@ -41,6 +45,13 @@ struct DetectorParams {
     int sensitivity = 0;
     int image_width = 0;
     int image_height = 0;
+    // Per-channel ai_settings value (spec §5): confidence threshold 0..1, supplied
+    // via GAI_SetChannelAiSettings. -1 = unset -> detector falls back to the
+    // threshold-derived value, so legacy channels are unaffected.
+    float confidence = -1.0f;
+    // Bitmask over class_table.h supported-class index (bit i => kSupportedClasses[i]
+    // enabled). -1 = unset -> detector reports all supported classes.
+    int class_mask = -1;
 };
 
 // Abstract detector. Implementations must be stateless w.r.t. channels —

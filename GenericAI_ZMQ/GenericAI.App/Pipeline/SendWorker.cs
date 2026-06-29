@@ -155,7 +155,6 @@ namespace GenericAI.App
                 bool ok = _zmq.Send(payload);
                 if (ok)
                 {
-                    ConsoleLog.WriteLine("Detected!! send analytics result via ZMQ!!");
                     FileLogger.Info($"Analytics result sent over ZMQ (ch={port})");
                 }
                 else
@@ -169,7 +168,6 @@ namespace GenericAI.App
             try
             {
                 await _client.PostAsync(url, payload).ConfigureAwait(false);
-                ConsoleLog.WriteLine("Detected!! send analytics result to server!!");
                 FileLogger.Info($"Analytics result posted ok (ch={port})");
                 return true;
             }

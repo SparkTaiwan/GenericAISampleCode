@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace GenericAI.App
 {
@@ -152,6 +153,16 @@ namespace GenericAI.App
                         await Write(resp, 200, "text/plain", "");
                         FileLogger.Info($"GetLicense received from {remote}");
                     }
+                    else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/GetSettingsSchema")
+                    {
+                        // Self-describing AI-settings schema (spec §5). The ConfigClient
+                        // GETs this to render the dynamic settings UI; the filled values
+                        // come back verbatim in SetParameters.ai_settings.
+                        string schema = SettingsSchema.Json;
+                        await Write(resp, 200, "application/json", schema);
+                        ConsoleLog.WriteLine($"/GetSettingsSchema from {remote} -> 200 ({schema.Length} bytes)");
+                        FileLogger.Info($"GetSettingsSchema served to {remote}");
+                    }
                     else
                     {
                         await Write(resp, 404, "text/plain", "Not Found");
@@ -205,6 +216,31 @@ namespace GenericAI.App
 
             ConsoleLog.WriteLine($"Received SetParameters request: {body}");
 
+            // Surface ai_settings (dynamic settings from the schema UI) explicitly so
+            // we can confirm it arrives. The native detector does not consume it yet —
+            // this is the receive side of spec §5.
+            // `version` also drives where jpg_compress comes from: v1.3 reads it from
+            // ai_settings (schema); v1.2 keeps the legacy top-level field (below).
+            string version = null;
+            int? jpgFromSchema = null;
+            try
+            {
+                var root = Newtonsoft.Json.Linq.JObject.Parse(body);
+                version = (string)root["version"];
+                var aiSettings = root["ai_settings"];
+                if (aiSettings != null)
+                {
+                    string s = aiSettings.ToString(Formatting.None);
+                    ConsoleLog.WriteLine($"ai_settings received from {remote}: {s}");
+                    FileLogger.Info($"ai_settings received from {remote}: {s}");
+
+                    // Apply the per-channel values to native (spec §5).
+                    jpgFromSchema = ExtractInt(aiSettings, "jpg_compress");
+                    ApplyAiSettingsToNative(_port, aiSettings);
+                }
+            }
+            catch { /* body already logged above; ignore */ }
+
             NativeInterop.SettingParameters settings;
             int roiGroups;
             try
@@ -217,6 +253,13 @@ namespace GenericAI.App
                 await Write(resp, 400, "text/plain", "Bad Request: " + ex.Message);
                 return;
             }
+
+            // v1.3 sources jpg_compress from the schema (ai_settings); v1.2 keeps the
+            // legacy top-level value already parsed into settings.jpg_compress. When v1.3
+            // omits it from the schema, settings.jpg_compress stays 0 and ParameterStore
+            // keeps its previous quality.
+            if (version == "1.3" && jpgFromSchema.HasValue)
+                settings.jpg_compress = jpgFromSchema.Value;
 
             try
             {
@@ -255,21 +298,133 @@ namespace GenericAI.App
             }
         }
 
+        // Applies schema-shaped or flat ai_settings to the native detector for one
+        // channel (spec §5). Object detection: confidence -> conf_threshold, classes
+        // -> supported-class bitmask. Motion: sensitivity + threshold. Keys a detector
+        // doesn't use stay absent (passed as <0). Shared by the incoming /SetParameters
+        // path and the startup default-seeding (Program.cs), so a channel that never
+        // receives ai_settings still follows the built-in default schema.
+        public static void ApplyAiSettingsToNative(int port, JToken aiSettings)
+        {
+            float? conf = ExtractConfidence(aiSettings);
+            int? classMask = ExtractClassMask(aiSettings);
+            int? sensitivity = ExtractInt(aiSettings, "sensitivity");
+            int? threshold = ExtractInt(aiSettings, "threshold");
+            if (conf.HasValue || classMask.HasValue || sensitivity.HasValue || threshold.HasValue)
+            {
+                NativeInterop.GAI_SetChannelAiSettings(port,
+                    conf ?? -1f, classMask ?? -1, sensitivity ?? -1, threshold ?? -1);
+                ConsoleLog.WriteLine($"ai_settings applied: ch{port} confidence={(conf.HasValue ? conf.Value.ToString() : "-")}"
+                    + $" classMask=0x{(classMask ?? -1):X} sensitivity={(sensitivity?.ToString() ?? "-")} threshold={(threshold?.ToString() ?? "-")}");
+            }
+        }
+
+        // ai_settings may be flat ({"confidence":0.8}) or schema-shaped
+        // ({"fields":[{"key":"confidence","value":0.8}]}). Pull confidence either way.
+        private static float? ExtractConfidence(JToken aiSettings)
+        {
+            try
+            {
+                JToken flat = aiSettings["confidence"];
+                if (flat != null && flat.Type != JTokenType.Object && flat.Type != JTokenType.Array)
+                    return (float)flat;
+
+                if (aiSettings["fields"] is JArray fields)
+                {
+                    foreach (JToken f in fields)
+                    {
+                        if ((string)f["key"] == "confidence")
+                        {
+                            JToken v = f["value"] ?? f["default"];
+                            if (v != null && v.Type != JTokenType.Object && v.Type != JTokenType.Array)
+                                return (float)v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // A scalar int field by key. flat ({"sensitivity":50}) or schema-shaped
+        // ({"fields":[{"key":"sensitivity","value":50}]}). null if absent.
+        private static int? ExtractInt(JToken aiSettings, string key)
+        {
+            try
+            {
+                JToken flat = aiSettings[key];
+                if (flat != null && flat.Type != JTokenType.Object && flat.Type != JTokenType.Array)
+                    return (int)flat;
+
+                if (aiSettings["fields"] is JArray fields)
+                {
+                    foreach (JToken f in fields)
+                    {
+                        if ((string)f["key"] == key)
+                        {
+                            JToken v = f["value"] ?? f["default"];
+                            if (v != null && v.Type != JTokenType.Object && v.Type != JTokenType.Array)
+                                return (int)v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // classes string_array -> supported-class bitmask (NativeInterop.SupportedClasses
+        // order). flat ({"classes":["person","car"]}) or schema-shaped
+        // ({"fields":[{"key":"classes","value":[...]}]}). null if absent.
+        private static int? ExtractClassMask(JToken aiSettings)
+        {
+            try
+            {
+                JArray arr = aiSettings["classes"] as JArray;
+                if (arr == null && aiSettings["fields"] is JArray fields)
+                {
+                    foreach (JToken f in fields)
+                    {
+                        if ((string)f["key"] == "classes")
+                        {
+                            arr = (f["value"] ?? f["default"]) as JArray;
+                            break;
+                        }
+                    }
+                }
+                if (arr == null) return null;
+
+                int mask = 0;
+                foreach (JToken t in arr)
+                {
+                    string name = (string)t;
+                    int idx = Array.IndexOf(NativeInterop.SupportedClasses, name);
+                    if (idx >= 0) mask |= (1 << idx);
+                }
+                return mask;
+            }
+            catch { }
+            return null;
+        }
+
         private static NativeInterop.SettingParameters ParseSettings(string body, out int roiGroups)
         {
             SetParametersDto data = JsonConvert.DeserializeObject<SetParametersDto>(body);
             if (data == null) throw new JsonException("request body is empty or null");
             if (data.image_width  == null) throw new JsonException("image_width is required");
             if (data.image_height == null) throw new JsonException("image_height is required");
-            if (data.jpg_compress == null) throw new JsonException("jpg_compress is required");
+            // v1.3 carries jpg_compress inside ai_settings (schema); only the legacy
+            // v1.2 top-level field is required here.
+            if (data.version != "1.3" && data.jpg_compress == null)
+                throw new JsonException("jpg_compress is required");
 
             NativeInterop.SettingParameters s = new NativeInterop.SettingParameters
             {
-                version = "1.2",
+                version = "1.3",
                 analytics_event_api_url = data.analytics_event_api_url ?? "",
                 image_width = data.image_width.Value,
                 image_height = data.image_height.Value,
-                jpg_compress = data.jpg_compress.Value,
+                jpg_compress = data.jpg_compress ?? 0,
                 sensitivity = new int[10],
                 threshold = new int[10],
                 rois = InitializeRoisArray(100),
@@ -326,6 +481,7 @@ namespace GenericAI.App
         // "missing required field" behaviour of the previous dynamic path.
         private sealed class SetParametersDto
         {
+            public string version { get; set; }
             public string analytics_event_api_url { get; set; }
             public int? image_width { get; set; }
             public int? image_height { get; set; }

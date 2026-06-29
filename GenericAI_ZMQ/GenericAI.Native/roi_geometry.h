@@ -7,6 +7,11 @@ struct DetectionRect {
     int y;
     int w;
     int h;
+    // class_table.h supported-class index; set explicitly by the detector
+    // (PostYolox). NO default member initializer — that would make DetectionRect a
+    // non-aggregate and break the brace-init {x,y,w,h} used in tests / motion.
+    // Brace-init with 4 values value-initialises cls to 0.
+    int cls;
 };
 
 struct ROIRect {

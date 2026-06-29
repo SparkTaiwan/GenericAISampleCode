@@ -69,6 +69,9 @@ namespace GenericAI.App
             string detectorLabel = parsed.DetectorKind < 0
                 ? "<compile-time default>"
                 : ((DetectorType)parsed.DetectorKind).ToString();
+            // /GetSettingsSchema serves the schema for this detector (motion vs object
+            // detection). -1 (compile-time default) falls back to object detection.
+            SettingsSchema.Configure(parsed.DetectorKind);
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, mode={parsed.Mode}, detector={detectorLabel}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (parsed.PortFromArgs)
             {
@@ -170,6 +173,22 @@ namespace GenericAI.App
                     if (string.IsNullOrEmpty(backend)) backend = "<unknown>";
                     VerboseConsole($"[INFO] detector backend = {backend}");
                     FileLogger.Info($"detector backend = {backend}");
+
+                    // Seed every channel with the built-in schema defaults so a channel
+                    // that never receives /SetParameters still follows the default schema
+                    // (e.g. object detection: only person/car at confidence 0.70) instead
+                    // of the native all-classes default. A later /SetParameters overrides.
+                    try
+                    {
+                        var schemaRoot = Newtonsoft.Json.Linq.JObject.Parse(SettingsSchema.Json);
+                        foreach (int p in ports)
+                            HttpListenerHost.ApplyAiSettingsToNative(p, schemaRoot);
+                        FileLogger.Info("Applied built-in default ai_settings to all channels");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Warn($"Applying default ai_settings failed: {ex.Message}");
+                    }
 
                     DropCounter    drops      = new DropCounter();
                     HttpPostClient postClient = new HttpPostClient();

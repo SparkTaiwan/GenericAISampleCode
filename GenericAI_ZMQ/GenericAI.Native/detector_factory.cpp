@@ -73,6 +73,7 @@ public:
         int n = inner_.Detect(*pctx, yuv, width, height, roi_rects, roi_count, indices, params);
         if (n <= 0) return n;
         FlattenBoxesToQuads(pctx->last_detections, out);
+        for (int i = 0; i < kNumSupportedClasses; ++i) out.class_counts[i] = pctx->last_class_counts[i];
         return n;
     }
 
@@ -107,6 +108,7 @@ public:
         int n = inner_.Phase3Post(*pctx, detector_slot, roi_rects, roi_count, indices);
         if (n <= 0) return n;
         FlattenBoxesToQuads(pctx->last_detections, out);
+        for (int i = 0; i < kNumSupportedClasses; ++i) out.class_counts[i] = pctx->last_class_counts[i];
         return n;
     }
 

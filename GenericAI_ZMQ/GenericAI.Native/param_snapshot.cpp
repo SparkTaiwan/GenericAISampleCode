@@ -56,12 +56,25 @@ void ParamSnapshot::Apply(const GAI_Settings& s) {
     }
 }
 
+void ParamSnapshot::ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    ai_confidence_  = confidence;
+    ai_class_mask_  = class_mask;
+    ai_sensitivity_ = sensitivity;
+    ai_threshold_   = threshold;
+}
+
 ParamSnapshot::View ParamSnapshot::Take() const {
     std::lock_guard<std::mutex> lk(mtx_);
     View v;
     v.roi_rects = roi_rects_;
     v.original_roi_points = original_roi_points_;
     v.params = latest_params_;
+    v.params.confidence = ai_confidence_;   // per-channel ai_settings override
+    v.params.class_mask = ai_class_mask_;
+    // Motion: ai_settings sensitivity/threshold override the per-ROI values when set.
+    if (ai_sensitivity_ >= 0) v.params.sensitivity = ai_sensitivity_;
+    if (ai_threshold_   >= 0) v.params.threshold   = ai_threshold_;
     return v;
 }
 

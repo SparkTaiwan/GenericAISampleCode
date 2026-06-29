@@ -22,6 +22,13 @@ public:
     };
 
     void Apply(const GAI_Settings& settings);
+    // Per-channel ai_settings (dynamic schema values, spec §5). Stored separately
+    // from latest_params_ so a later Apply(GAI_Settings) does not clobber it; merged
+    // into the View in Take(). confidence: 0..1, or <0 to clear. class_mask: bitmask
+    // over class_table.h supported index, or <0 for "all supported". sensitivity /
+    // threshold: 0..100 motion tunables that override the per-ROI values, or <0 to
+    // leave the per-ROI value in place.
+    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold);
     View Take() const;
 
 private:
@@ -34,6 +41,12 @@ private:
     DetectorParams latest_params_ = []{
         DetectorParams p; p.threshold = 25; p.sensitivity = 50; return p;
     }();
+    // Per-channel ai_settings (kept apart from latest_params_ which Apply()
+    // rebuilds). -1 = unset.
+    float ai_confidence_  = -1.0f;
+    int   ai_class_mask_  = -1;
+    int   ai_sensitivity_ = -1;   // motion: overrides per-ROI sensitivity when >= 0
+    int   ai_threshold_   = -1;   // motion: overrides per-ROI threshold when >= 0
 };
 
 }  // namespace gai

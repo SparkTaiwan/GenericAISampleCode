@@ -34,4 +34,8 @@ typedef void(__stdcall* GAI_DetectionCallback)(
     unsigned long long timestamp,
     const GAI_Roi* rois_flat,
     int rois_count,
-    int node_count);
+    int node_count,
+    // Per supported-class detection count, in class_table.h order; length =
+    // class_counts_len. The host emits "<class>___Count" items from these.
+    const int* class_counts,
+    int class_counts_len);

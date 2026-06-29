@@ -495,9 +495,19 @@ struct PersonDetector::Impl {
         for (int a = 0; a < num_anchors; ++a) {
             const float* pred = out_data + a * channels;
             const float obj = pred[4];
-            const float cls = pred[5 + target_class];
-            const float score = obj * cls;
-            if (score < slot.conf_threshold) continue;
+
+            // Best class over the supported set (class_table.h), not a single
+            // target_class. The per-channel class_mask filter is applied later in
+            // ApplyRoiFilter so the decode stays channel-agnostic.
+            float score = 0.f;
+            int   best_cls = -1;
+            for (int s = 0; s < gai::kNumSupportedClasses; ++s) {
+                const int coco = gai::kSupportedClasses[s].coco_id;
+                if (coco >= num_classes) continue;   // model lacks this class channel
+                const float sc = obj * pred[5 + coco];
+                if (sc > score) { score = sc; best_cls = s; }
+            }
+            if (best_cls < 0 || score < slot.conf_threshold) continue;
 
             const GridStride& gs = grid_strides[a];
             const float cx = (pred[0] + gs.grid_x) * gs.stride;
@@ -521,6 +531,7 @@ struct PersonDetector::Impl {
             sb.box.y = static_cast<int>(y0);
             sb.box.w = static_cast<int>(ww);
             sb.box.h = static_cast<int>(hh);
+            sb.box.cls = best_cls;
             sb.score = score;
             proposals.push_back(sb);
         }
@@ -529,6 +540,12 @@ struct PersonDetector::Impl {
     }
 
     float ComputeConfThreshold(const gai::DetectorParams& params) const {
+        // Explicit per-channel ai_settings confidence wins when set (>=0); else
+        // fall back to the legacy threshold-derived value (unaffected channels).
+        if (params.confidence >= 0.0f) {
+            float c = params.confidence;
+            return c > 1.0f ? 1.0f : c;
+        }
         int ti = params.threshold; if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
         return 0.20f + (ti / 100.f) * 0.50f;
     }
@@ -544,11 +561,25 @@ struct PersonDetector::Impl {
                         const ROIRect* roi_rects, int roi_count,
                         std::vector<int>& detected_roi_indices) {
         ctx.last_detections.clear();
+        for (int i = 0; i < gai::kNumSupportedClasses; ++i) ctx.last_class_counts[i] = 0;
+
+        // Per-channel class filter: mask < 0 => all supported classes enabled.
+        const int mask = ctx.class_mask;
+        auto enabled = [mask](int cls) -> bool {
+            if (cls < 0 || cls >= gai::kNumSupportedClasses) return false;
+            return mask < 0 || (mask & (1 << cls)) != 0;
+        };
+
         if (roi_count <= 0 || roi_rects == nullptr) {
-            ctx.last_detections = std::move(raw);
+            for (auto& b : raw) {
+                if (!enabled(b.cls)) continue;
+                ctx.last_class_counts[b.cls]++;
+                ctx.last_detections.push_back(b);
+            }
         } else {
             std::vector<char> roi_hit(roi_count, 0);
             for (const auto& b : raw) {
+                if (!enabled(b.cls)) continue;   // disabled class: no count, no ROI hit
                 bool keep = false;
                 for (int r = 0; r < roi_count; ++r) {
                     if (BoxOverlapsRoi(b, roi_rects[r])) {
@@ -556,7 +587,10 @@ struct PersonDetector::Impl {
                         keep = true;
                     }
                 }
-                if (keep) ctx.last_detections.push_back(b);
+                if (keep) {
+                    ctx.last_class_counts[b.cls]++;
+                    ctx.last_detections.push_back(b);
+                }
             }
             for (int r = 0; r < roi_count; ++r) {
                 if (roi_hit[r]) detected_roi_indices.push_back(r);
@@ -608,6 +642,7 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
     ctx.stride_counter = 0;
 
     const float conf_threshold = m_impl->ComputeConfThreshold(params);
+    ctx.class_mask = params.class_mask;   // consumed by ApplyRoiFilter below
 
     const int slot_idx = m_impl->AcquireSlotBlocking();
     if (slot_idx < 0) return 0;   // pool closed (shutdown)
@@ -656,6 +691,8 @@ int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
     ctx.stride_counter = 0;
 
     const float conf_threshold = m_impl->ComputeConfThreshold(params);
+    // Stored on the prepare side so Phase3Post (no params) can filter by class.
+    ctx.class_mask = params.class_mask;
     const int slot_idx = m_impl->AcquireSlotBlocking();
     if (slot_idx < 0) return -2;   // pool closed mid-acquire (shutdown)
 

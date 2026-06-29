@@ -10,7 +10,7 @@ namespace GenericAI.App
     {
         private readonly object _lock = new object();
         private volatile string _url = "";
-        private volatile int _jpgQuality = 50;
+        private volatile int _jpgQuality = 30;
 
         public string Url        => _url;
         public int    JpgQuality => _jpgQuality;

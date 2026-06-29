@@ -24,6 +24,12 @@
 struct PersonDetectorContext : public gai::DetectorContext {
     int stride_counter = 0;
     std::vector<DetectionRect> last_detections;
+    // Per-channel ai_settings class filter (class_table.h supported index bitmask;
+    // <0 = all). Set on the prepare side (Detect / Phase1Prepare) and read by
+    // ApplyRoiFilter on the post side. last_class_counts is the per-supported-class
+    // tally of the kept detections, fed to the C ABI callback.
+    int class_mask = -1;
+    int last_class_counts[gai::kNumSupportedClasses] = { 0 };
 };
 
 // Person detector backed by ONNX Runtime. Auto-detects YOLOX / YOLOv6 /

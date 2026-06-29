@@ -119,6 +119,14 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
     }
 }
 
+void ChannelPipeline::ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold) {
+    params_.ApplyAiSettings(confidence, class_mask, sensitivity, threshold);
+    std::cout << "[channel " << port_ << "] ai_settings: confidence="
+              << confidence << " class_mask=0x" << std::hex << class_mask
+              << std::dec << " sensitivity=" << sensitivity
+              << " threshold=" << threshold << std::endl;
+}
+
 void ChannelPipeline::SetCallback(GAI_DetectionCallback cb) {
     callback_.store(cb, std::memory_order_release);
 }
@@ -172,7 +180,8 @@ bool ChannelPipeline::TryAcquireWork(FrameSlot*& slot, ParamSnapshot::View& view
 }
 
 void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
-                                   int rois_count, int node_count) {
+                                   int rois_count, int node_count,
+                                   const int* class_counts) {
     using namespace std::chrono;
     if (!slot) return;
     const std::uint64_t ts = slot->timestamp;
@@ -181,6 +190,9 @@ void ChannelPipeline::CommitResult(FrameSlot* slot, std::vector<GAI_Roi>&& flat,
     pkt.rois_flat  = std::move(flat);
     pkt.rois_count = rois_count;
     pkt.node_count = node_count;
+    if (class_counts) {
+        for (int i = 0; i < kNumSupportedClasses; ++i) pkt.class_counts[i] = class_counts[i];
+    }
 
     // Spin-with-sleep instead of dropping: pressure backs up through this
     // channel's dispatch_q -> BufferPool -> MmfReader -> share memory
@@ -230,7 +242,8 @@ void ChannelPipeline::DispatchLoop() {
                    pkt.frame->width, pkt.frame->height,
                    pkt.frame->data.data(), pkt.frame->size,
                    pkt.frame->timestamp,
-                   pkt.rois_flat.data(), pkt.rois_count, pkt.node_count);
+                   pkt.rois_flat.data(), pkt.rois_count, pkt.node_count,
+                   pkt.class_counts, kNumSupportedClasses);
             }
         }
 

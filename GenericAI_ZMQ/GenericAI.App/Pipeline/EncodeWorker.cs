@@ -56,7 +56,7 @@ namespace GenericAI.App
                             try
                             {
                                 int quality = channel.Parameters.JpgQuality;
-                                if (quality <= 0) quality = 50;
+                                if (quality <= 0) quality = 30;
 
                                 // fixed is cheaper than GCHandle.Alloc(Pinned) —
                                 // no handle-table round trip per frame; the buffer
@@ -74,15 +74,39 @@ namespace GenericAI.App
 
                                 TimingRecorder.Instance.MarkJpegDone(raw.Timestamp);
 
+                                // Per-class counts -> "<Class>__Count" metadata items
+                                // (spec §2.2/§3.1: capitalised class name + "__Count"
+                                // suffix; the recorder keys counting off "__Count").
+                                System.Collections.Generic.List<HttpEnvelope.EnvelopeItem> items = null;
+                                if (raw.ClassCounts != null)
+                                {
+                                    int m = Math.Min(raw.ClassCounts.Length, NativeInterop.SupportedClasses.Length);
+                                    for (int i = 0; i < m; i++)
+                                    {
+                                        if (raw.ClassCounts[i] <= 0) continue;
+                                        if (items == null) items = new System.Collections.Generic.List<HttpEnvelope.EnvelopeItem>();
+                                        string cls = NativeInterop.SupportedClasses[i];
+                                        string name = cls.Length == 0
+                                            ? cls
+                                            : char.ToUpperInvariant(cls[0]) + cls.Substring(1);
+                                        items.Add(new HttpEnvelope.EnvelopeItem
+                                        {
+                                            name = name + "__Count",
+                                            value = raw.ClassCounts[i].ToString(),
+                                        });
+                                    }
+                                }
+
                                 HttpEnvelope env = new HttpEnvelope
                                 {
-                                    version = "1.2",
+                                    version = "1.3",
                                     port_num = raw.Port,
                                     keyframe = jpeg,
                                     timestamp = raw.Timestamp,
                                     RoisFlat = raw.RoisFlat,
                                     RoisCount = raw.RoisCount,
                                     NodeCount = raw.NodeCount,
+                                    items = items,
                                 };
 
                                 // Blocking Add: pressure backs up to this worker,

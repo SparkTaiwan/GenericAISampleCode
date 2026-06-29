@@ -258,7 +258,8 @@ void SharedDetectorScheduler::InferLoop() {
             chan->CommitResult(slot,
                                std::move(result.flattened_points),
                                result.rois_count,
-                               result.node_count);
+                               result.node_count,
+                               result.class_counts);
         } else {
             if (kEnableTimingLog) TimingRecorder::Instance().Flush(slot->timestamp, TimingRecorder::FrameState::SkippedNoDetection);
             chan->CommitEmpty(slot);
@@ -425,7 +426,8 @@ void SharedDetectorScheduler::GpuLoop() {
             item.channel->CommitResult(item.slot,
                                        std::move(result.flattened_points),
                                        result.rois_count,
-                                       result.node_count);
+                                       result.node_count,
+                                       result.class_counts);
         } else {
             if (kEnableTimingLog) TimingRecorder::Instance().Flush(item.timestamp, TimingRecorder::FrameState::SkippedNoDetection);
             item.channel->CommitEmpty(item.slot);
