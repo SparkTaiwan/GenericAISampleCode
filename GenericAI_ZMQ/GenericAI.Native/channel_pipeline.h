@@ -66,7 +66,8 @@ public:
     // Per-channel ai_settings (GAI_SetChannelAiSettings). Merged into the per-call
     // DetectorParams so each channel can react differently: object detection uses
     // confidence + classes; motion uses sensitivity + threshold.
-    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold);
+    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold,
+                         float min_object_size, float max_object_size);
     void SetCallback(GAI_DetectionCallback cb);
 
     int Port() const { return port_; }

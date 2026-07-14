@@ -37,7 +37,9 @@ namespace GenericAI.App
         private static readonly object _sendLock = new object();
         private static Timer _sendTimer;
         private static readonly HttpPostClient _postClient = new HttpPostClient();
+#if USE_ZMQ
         private static ZmqResultSender _zmqResultSender;  // null => HTTP results
+#endif
 
         public static async Task<int> Main(string[] args)
         {
@@ -108,6 +110,7 @@ namespace GenericAI.App
                 _callbackRegistered = true;
                 Console.WriteLine("register Callback");
 
+#if USE_ZMQ
                 // Result plane: ZMQ PUSH (connect to the recorder's bound PULL) when
                 // result_endpoint is given, else HTTP POST (default).
                 if (parsed.UseZmqResults)
@@ -138,6 +141,7 @@ namespace GenericAI.App
                     }
                     Console.WriteLine($"ZMQ frame source: connect PULL -> {parsed.FrameEndpoint}");
                 }
+#endif
 
                 _sendTimer = new Timer(ProcessSendQueue, null,
                     TimeSpan.Zero, TimeSpan.FromMilliseconds(500));
@@ -182,6 +186,12 @@ namespace GenericAI.App
 
                 Console.WriteLine($"Detection callback: ch={channelId} {width}x{height} size={frameSize} rois={roisCount}");
 
+                // Motion send throttle (schema "trigger_interval"): at most one result
+                // per trigger_interval seconds per channel (0 = no limit). Checked first
+                // so a suppressed trigger costs no JPEG encode.
+                if (!channel.TryPassTriggerInterval(channel.Parameters.TriggerIntervalSec))
+                    return;
+
                 byte[] jpeg = ConvertYUV420ToJpeg(frameI420, frameSize, width, height,
                     channel.Parameters.JpgQuality);
 
@@ -200,7 +210,7 @@ namespace GenericAI.App
 
                 HttpEnvelope env = new HttpEnvelope
                 {
-                    version = "1.2",
+                    version = Protocol.Version,
                     port_num = channelId,
                     keyframe = jpeg,
                     timestamp = timestamp,
@@ -235,6 +245,7 @@ namespace GenericAI.App
         {
             byte[] payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(env));
 
+#if USE_ZMQ
             // ZMQ result plane: PUSH the same JSON instead of HTTP POST. No
             // per-channel URL needed; the recorder demuxes by port_num in the JSON.
             if (_zmqResultSender != null)
@@ -245,6 +256,7 @@ namespace GenericAI.App
                     Console.WriteLine($"ZMQ result send timed out (no consumer?) ch{env.port_num}");
                 return;
             }
+#endif
 
             ChannelHandle channel;
             if (!_byChannelId.TryGetValue(env.port_num, out channel))
@@ -342,9 +354,11 @@ namespace GenericAI.App
                 }
 
                 try { _sendTimer?.Dispose(); } catch { }
+#if USE_ZMQ
                 // Send timer stopped -> no more result sends; close the ZMQ socket
                 // (LINGER=0, so this never blocks).
                 try { _zmqResultSender?.Dispose(); } catch { }
+#endif
 
                 // Deinitialize stops the ZMQ frame receiver first, then joins the
                 // native worker threads, so no more callbacks can arrive once the

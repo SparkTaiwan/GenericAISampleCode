@@ -1,4 +1,5 @@
 #include "pch.h"
+#ifdef USE_ZMQ  // ZMQ frame transport (ffmpeg/libzmq) -- excluded from Release-NoZmq
 #include "nal_decoder.h"
 #include "zmq_frame_header.h"
 #include "host_log.h"
@@ -109,3 +110,4 @@ void NalDecoder::EmitPackedI420(const FrameCb& on_frame) {
 }
 
 }  // namespace gai
+#endif // USE_ZMQ

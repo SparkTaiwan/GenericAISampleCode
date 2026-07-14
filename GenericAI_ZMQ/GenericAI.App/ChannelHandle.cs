@@ -50,6 +50,28 @@ namespace GenericAI.App
             SendQ.CompleteAdding();
         }
 
+        // ---- motion trigger throttle (min interval between sends) -----------
+        // Records the last time a frame was allowed through for this channel.
+        // Stopwatch ticks (monotonic); 0 = never sent.
+        private long _lastTriggerTicks;
+
+        // Returns true (and stamps "now") when at least intervalSec has elapsed since the last pass;
+        // false to suppress this trigger. intervalSec <= 0 always passes (throttle disabled).
+        // Thread-safe for the multi-worker EncodeWorker pool: a CAS lets exactly one frame per window win.
+        public bool TryPassTriggerInterval(int intervalSec)
+        {
+            if (intervalSec <= 0) return true;
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            long window = (long)intervalSec * System.Diagnostics.Stopwatch.Frequency;
+            while (true)
+            {
+                long last = Volatile.Read(ref _lastTriggerTicks);
+                if (last != 0 && (now - last) < window) return false;   // still inside the quiet window
+                if (Interlocked.CompareExchange(ref _lastTriggerTicks, now, last) == last) return true;
+                // Lost the race to another worker; re-read and re-check.
+            }
+        }
+
         // ---- send-retry parking (per-channel failure isolation) ------------
         // A payload whose POST failed is parked here instead of being retried
         // in place by the worker that happened to hold it. While anything is

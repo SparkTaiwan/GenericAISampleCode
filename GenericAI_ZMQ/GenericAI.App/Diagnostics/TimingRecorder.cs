@@ -42,6 +42,7 @@ namespace GenericAI.App
             DroppedSendQFull,
             DroppedUrlEmpty,
             DroppedHttpException,
+            DroppedThrottled,
             IncompleteSwept,
         }
 
@@ -257,6 +258,7 @@ namespace GenericAI.App
                 case FrameState.DroppedSendQFull:              return "dropped_sendq_full";
                 case FrameState.DroppedUrlEmpty:               return "dropped_url_empty";
                 case FrameState.DroppedHttpException:          return "dropped_http_exception";
+                case FrameState.DroppedThrottled:              return "dropped_throttled";
                 case FrameState.IncompleteSwept:               return "incomplete_swept";
                 case FrameState.InProgress:                    return "in_progress";
                 default:                                       return "unknown";

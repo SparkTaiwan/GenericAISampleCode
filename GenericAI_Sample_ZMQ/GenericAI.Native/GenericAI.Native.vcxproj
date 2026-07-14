@@ -9,6 +9,10 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="Release-NoZmq|x64">
+      <Configuration>Release-NoZmq</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
@@ -32,6 +36,13 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-NoZmq|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -39,6 +50,9 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release-NoZmq|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
@@ -54,10 +68,16 @@
     <IntDir>$(SolutionDir)bin\temp\$(PlatformToolset)\$(ProjectName)\$(Configuration)\</IntDir>
     <TargetName>GenericAI.Native</TargetName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-NoZmq|x64'">
+    <LinkIncremental>false</LinkIncremental>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\x64\</OutDir>
+    <IntDir>$(SolutionDir)bin\temp\$(PlatformToolset)\$(ProjectName)\$(Configuration)\</IntDir>
+    <TargetName>GenericAI.Native</TargetName>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions>_DEBUG;GAI_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;GAI_EXPORTS;_WINDOWS;_USRDLL;USE_ZMQ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -71,6 +91,28 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;GAI_EXPORTS;_WINDOWS;_USRDLL;USE_ZMQ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- No-ZMQ: same as Release but WITHOUT USE_ZMQ, so nal_decoder / zmq_frame_receiver
+       are compiled out and the libzmq/FFmpeg NuGet targets are not imported below
+       (no ffmpeg/libzmq DLLs). This motion-only native then has no NuGet deps at all. -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release-NoZmq|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -111,18 +153,21 @@
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release-NoZmq|x64'">Create</PrecompiledHeader>
     </ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets')" />
-    <Import Project="..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets" Condition="Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets')" />
+    <!-- libzmq + FFmpeg add their include/lib and COPY their runtime DLLs. Import them
+         only when USE_ZMQ is in effect (Debug/Release), NOT in Release-NoZmq. -->
+    <Import Project="..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" />
+    <Import Project="..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets" Condition="Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets'))" />
-    <Error Condition="!Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets'))" />
+    <Error Condition="!Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets'))" />
+    <Error Condition="!Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets'))" />
   </Target>
 </Project>

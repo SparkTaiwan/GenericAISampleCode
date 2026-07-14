@@ -20,11 +20,24 @@
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
     <OutputPath>$(SolutionDir)bin\$(Configuration)\x64\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <DefineConstants>DEBUG;TRACE;USE_ZMQ</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>$(SolutionDir)bin\$(Configuration)\x64\</OutputPath>
+    <DefineConstants>TRACE;USE_ZMQ</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- No-ZMQ build: same code, but USE_ZMQ is NOT defined so all ZMQ transport
+       (ZmqResultSender + libzmq P/Invoke, ZMQ frame receiver) is compiled out.
+       The output has no libzmq dependency; drop the ffmpeg/libzmq native DLLs when
+       packaging this configuration (and pair it with a no-ZMQ GenericAI.Native.dll). -->
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release-NoZmq|x64' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
@@ -51,6 +64,7 @@
     <Compile Include="ChannelHandle.cs" />
     <Compile Include="CommandLineArgs.cs" />
     <Compile Include="SettingsSchema.cs" />
+    <Compile Include="Protocol.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Diagnostics\ConsoleLog.cs" />
     <Compile Include="Diagnostics\HealthState.cs" />
@@ -76,6 +90,9 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="GenericAI.Config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\native-deps\win-x64\turbojpeg.dll">
       <Link>turbojpeg.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

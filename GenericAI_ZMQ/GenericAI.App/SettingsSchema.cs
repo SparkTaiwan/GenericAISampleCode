@@ -64,6 +64,7 @@ namespace GenericAI.App
                     },
                     new {
                         key = "classes", type = "string_array",
+                        counting = true,   // this field's options are the countable item catalog (each can be sent as value__Count)
                         label = Loc(("zh-TW", "偵測類別"), ("en", "Classes")),
                         options = new object[]
                         {
@@ -77,7 +78,25 @@ namespace GenericAI.App
                             new { value = "dog",        label = Loc(("zh-TW", "狗"),     ("en", "Dog")) },
                         },
                         @default = new[] { "person", "car" }, value = new[] { "person", "car" }
-                    },                    
+                    },
+                    new {
+                        key = "object_size_min", type = "float",
+                        label       = Loc(("zh-TW", "最小物件大小（畫面佔比 %）"), ("en", "Min Object Size (% of frame)")),
+                        description = Loc(("zh-TW", "只保留邊界框面積大於畫面此比例的物件，用來濾掉太小的偵測。0 表示不限制下限"), ("en", "Keep only objects whose bounding-box area exceeds this percentage of the frame; filters out tiny detections. 0 means no lower limit")),
+                        @default = 0.0, value = 0.0, min = 0.0, max = 100.0, step = 0.5
+                    },
+                    new {
+                        key = "object_size_max", type = "float",
+                        label       = Loc(("zh-TW", "最大物件大小（畫面佔比 %）"), ("en", "Max Object Size (% of frame)")),
+                        description = Loc(("zh-TW", "只保留邊界框面積小於畫面此比例的物件，用來濾掉太大的偵測。100 表示不限制上限"), ("en", "Keep only objects whose bounding-box area is below this percentage of the frame; filters out oversized detections. 100 means no upper limit")),
+                        @default = 100.0, value = 100.0, min = 0.0, max = 100.0, step = 0.5
+                    },
+                    new {
+                        key = "trigger_interval", type = "int",
+                        label       = Loc(("zh-TW", "觸發間隔（秒）"), ("en", "Trigger Interval (sec)")),
+                        description = Loc(("zh-TW", "送出 HTTP POST 的最小間隔秒數；送出後這段時間內的偵測都不再發送。0 表示不限制，有偵測就送"), ("en", "Minimum seconds between HTTP POSTs; detections within this window after a send are suppressed. 0 means no limit, send on every detection")),
+                        @default = 1, value = 1, min = 0, max = 3600
+                    },
                 }
             };
             return JsonConvert.SerializeObject(schema);
@@ -106,6 +125,12 @@ namespace GenericAI.App
                         label       = Loc(("zh-TW", "門檻值"), ("en", "Threshold")),
                         description = Loc(("zh-TW", "觸發偵測所需的畫面變化量"), ("en", "Amount of frame change required to trigger")),
                         @default = 25, value = 25, min = 1, max = 100
+                    },
+                    new {
+                        key = "trigger_interval", type = "int",
+                        label       = Loc(("zh-TW", "觸發間隔（秒）"), ("en", "Trigger Interval (sec)")),
+                        description = Loc(("zh-TW", "送出 HTTP POST 的最小間隔秒數；送出後這段時間內的觸發都不再發送。0 表示不限制，有觸發就送"), ("en", "Minimum seconds between motion HTTP POSTs; triggers within this window after a send are suppressed. 0 means no limit, send on every trigger")),
+                        @default = 1, value = 1, min = 0, max = 3600
                     },
                 }
             };

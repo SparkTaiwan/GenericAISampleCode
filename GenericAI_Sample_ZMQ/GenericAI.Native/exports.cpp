@@ -1,7 +1,9 @@
 #include "pch.h"
 #include "channel.h"
 #include "gai_abi.h"
+#ifdef USE_ZMQ
 #include "zmq_frame_receiver.h"
+#endif
 
 #include <iostream>
 #include <memory>
@@ -13,7 +15,9 @@ namespace {
 
 std::mutex g_lifecycle_mtx;
 std::vector<std::unique_ptr<gai::Channel>> g_channels;
+#ifdef USE_ZMQ
 std::unique_ptr<gai::ZmqFrameReceiver> g_zmq_receiver;
+#endif
 
 gai::Channel* FindByPort(int port) {
     for (auto& c : g_channels) {
@@ -76,6 +80,7 @@ __declspec(dllexport) void __cdecl GAI_RegisterCallback(GAI_DetectionCallback cb
 // a PULL socket to it. Flips the global ZMQ frame mode so channels stop polling
 // the MMF and instead receive decoded frames via Channel::SubmitDecodedFrame.
 // Returns 0 on success.
+#ifdef USE_ZMQ
 __declspec(dllexport) int __cdecl GAI_StartZmqReceiver(const char* endpoint) {
     if (!endpoint || !endpoint[0]) return 1;
     std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
@@ -110,11 +115,14 @@ __declspec(dllexport) void __cdecl GAI_StopZmqReceiver(void) {
     }
     if (r) r->Stop();   // outside the lock: Stop() joins the receive thread
 }
+#endif // USE_ZMQ
 
 __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     // ORDER: stop the frame receiver FIRST so no SubmitDecodedFrame races channel
     // teardown, then stop and join the channels.
+#ifdef USE_ZMQ
     GAI_StopZmqReceiver();
+#endif
 
     std::vector<std::unique_ptr<gai::Channel>> chans;
     {

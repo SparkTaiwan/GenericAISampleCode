@@ -6,7 +6,9 @@
 #include "host_log.h"
 #include "shared_detector_scheduler.h"
 #include "timing_recorder.h"
+#ifdef USE_ZMQ
 #include "zmq_frame_receiver.h"
+#endif
 
 #include <cstring>
 #include <memory>
@@ -20,9 +22,11 @@ namespace {
 std::mutex g_lifecycle_mtx;
 std::unique_ptr<gai::SharedDetectorScheduler> g_scheduler;
 
+#ifdef USE_ZMQ
 // ZMQ frame plane (optional). When started, frames arrive over ZMQ (NAL -> decode
 // -> ChannelPipeline::SubmitDecodedFrame) instead of MMF.
 std::unique_ptr<gai::ZmqFrameReceiver> g_zmq_receiver;
+#endif
 
 // Last initialization error (e.g. detector/model load failure). Exposed to the
 // C# host via GAI_GetInitError so it can report it on /Alive instead of the
@@ -146,12 +150,13 @@ __declspec(dllexport) int __cdecl GAI_SetChannelParameters(int port, const GAI_S
 // (0..100; <0 => keep per-ROI value). Each channel keeps its own, so channels react
 // differently. Unused keys for a given detector are passed as <0.
 __declspec(dllexport) int __cdecl GAI_SetChannelAiSettings(
-        int port, float confidence, int class_mask, int sensitivity, int threshold) {
+        int port, float confidence, int class_mask, int sensitivity, int threshold,
+        float min_object_size, float max_object_size) {
     std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
     if (!g_scheduler) return 1;
     auto* c = g_scheduler->FindByPort(port);
     if (!c) return 1;
-    try { c->ApplyAiSettings(confidence, class_mask, sensitivity, threshold); }
+    try { c->ApplyAiSettings(confidence, class_mask, sensitivity, threshold, min_object_size, max_object_size); }
     catch (...) { return 1; }
     return 0;
 }
@@ -170,6 +175,7 @@ __declspec(dllexport) void __cdecl GAI_RegisterCallback(GAI_DetectionCallback cb
 // first /SetParameters (it flips channels into ZMQ mode so they do not spawn an
 // MmfReader). endpoint is the module's bound PUSH address, e.g. "tcp://host:5556";
 // this side connects a PULL socket to it. Returns 0 on success.
+#ifdef USE_ZMQ
 __declspec(dllexport) int __cdecl GAI_StartZmqReceiver(const char* endpoint) {
     if (!endpoint || !endpoint[0]) return 1;
     std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
@@ -195,16 +201,19 @@ __declspec(dllexport) void __cdecl GAI_StopZmqReceiver(void) {
     }
     if (r) { try { r->Stop(); } catch (...) {} }
 }
+#endif // USE_ZMQ
 
 __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     // ORDER: stop the frame receiver FIRST so no SubmitDecodedFrame races the
     // channel teardown below (same ordering contract as the shared InferLoop).
+#ifdef USE_ZMQ
     std::unique_ptr<gai::ZmqFrameReceiver> r;
     {
         std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
         r = std::move(g_zmq_receiver);
     }
     if (r) { try { r->Stop(); } catch (...) {} }
+#endif
 
     std::unique_ptr<gai::SharedDetectorScheduler> s;
     {

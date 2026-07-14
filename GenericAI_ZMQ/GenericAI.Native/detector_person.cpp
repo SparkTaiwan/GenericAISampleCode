@@ -243,6 +243,11 @@ struct PersonDetector::Impl {
         float conf_threshold = 0.0f;
         int orig_w = 0;
         int orig_h = 0;
+        // Bounding-box area band as a fraction of the frame (0 = that bound disabled). Boxes
+        // smaller than min or larger than max are dropped in PostYolox. Derived from
+        // DetectorParams.min_object_size / max_object_size.
+        float min_object_area_frac = 0.0f;
+        float max_object_area_frac = 0.0f;
     };
     static constexpr int kPoolSize = 2;
     std::array<InFlight, kPoolSize> in_flights{};
@@ -456,10 +461,12 @@ struct PersonDetector::Impl {
 
     void PreFrame(InFlight& slot,
                   const unsigned char* yuv, int orig_w, int orig_h,
-                  float conf_threshold) {
+                  float conf_threshold, float min_object_area_frac, float max_object_area_frac) {
         slot.orig_w = orig_w;
         slot.orig_h = orig_h;
         slot.conf_threshold = conf_threshold;
+        slot.min_object_area_frac = min_object_area_frac;
+        slot.max_object_area_frac = max_object_area_frac;
         slot.lb = ComputeLetterbox(orig_w, orig_h, input_w, input_h);
         PreprocessYoloxI420(yuv, orig_w, orig_h, input_w, input_h,
                             slot.lb, slot.sx_lut.data(), slot.input_buffer.data());
@@ -526,6 +533,19 @@ struct PersonDetector::Impl {
             if (y0 + hh > slot.orig_h) hh = slot.orig_h - y0;
             if (ww <= 1.f || hh <= 1.f) continue;
 
+            // Object-size band filter (ai_settings object_size_min / object_size_max): drop boxes
+            // whose area falls outside the configured fraction band. 0 = that bound disabled.
+            if (slot.min_object_area_frac > 0.0f || slot.max_object_area_frac > 0.0f) {
+                const float frame_area = static_cast<float>(slot.orig_w) * static_cast<float>(slot.orig_h);
+                if (frame_area > 0.0f) {
+                    const float box_area = ww * hh;
+                    if (slot.min_object_area_frac > 0.0f && box_area < slot.min_object_area_frac * frame_area)
+                        continue;
+                    if (slot.max_object_area_frac > 0.0f && box_area > slot.max_object_area_frac * frame_area)
+                        continue;
+                }
+            }
+
             ScoredBox sb;
             sb.box.x = static_cast<int>(x0);
             sb.box.y = static_cast<int>(y0);
@@ -548,6 +568,23 @@ struct PersonDetector::Impl {
         }
         int ti = params.threshold; if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
         return 0.20f + (ti / 100.f) * 0.50f;
+    }
+
+    // min_object_size is a percentage of frame area (0..100); convert to a 0..1 area
+    // fraction. <=0 (or unset) means no lower-size filter.
+    static float ComputeMinObjectAreaFrac(const gai::DetectorParams& params) {
+        float pct = params.min_object_size;
+        if (pct <= 0.0f) return 0.0f;
+        if (pct > 100.0f) pct = 100.0f;
+        return pct / 100.0f;
+    }
+
+    // max_object_size is a percentage of frame area (0..100); convert to a 0..1 area
+    // fraction. <0 or >=100 (or unset) means no upper-size filter (returns 0 = disabled).
+    static float ComputeMaxObjectAreaFrac(const gai::DetectorParams& params) {
+        float pct = params.max_object_size;
+        if (pct < 0.0f || pct >= 100.0f) return 0.0f;
+        return pct / 100.0f;
     }
 
     // Applies the bbox→ROI overlap filter; populates ctx.last_detections (kept
@@ -650,7 +687,9 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
 
     std::vector<DetectionRect> raw;
     try {
-        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold);
+        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold,
+                         m_impl->ComputeMinObjectAreaFrac(params),
+                         m_impl->ComputeMaxObjectAreaFrac(params));
         m_impl->GpuFrame(slot);
         m_impl->PostFrame(slot, raw);
     } catch (const Ort::Exception& e) {
@@ -698,7 +737,9 @@ int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
 
     auto& slot = m_impl->in_flights[slot_idx];
     try {
-        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold);
+        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold,
+                         m_impl->ComputeMinObjectAreaFrac(params),
+                         m_impl->ComputeMaxObjectAreaFrac(params));
     } catch (const std::exception& e) {
         std::cerr << "[AI] Preprocess failed: " << e.what() << std::endl;
         m_impl->ReleaseSlot(slot_idx);

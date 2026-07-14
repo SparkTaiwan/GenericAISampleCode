@@ -23,17 +23,24 @@ namespace GenericAI.App
         private readonly ChannelHandle[] _channelsByIdx;
         private readonly HttpPostClient _client;
         private readonly DropCounter _drops;
+#if USE_ZMQ
         private readonly ZmqResultSender _zmq;  // null => HTTP POST path
+#endif
 
         public SendWorker(ChannelHandle[] channelsByIdx,
                           HttpPostClient client,
-                          DropCounter drops,
-                          ZmqResultSender zmq = null)
+                          DropCounter drops
+#if USE_ZMQ
+                          , ZmqResultSender zmq = null
+#endif
+                          )
         {
             _channelsByIdx = channelsByIdx;
             _client = client;
             _drops = drops;
+#if USE_ZMQ
             _zmq = zmq;
+#endif
         }
 
         public Task RunAsync(CancellationToken ct)
@@ -59,7 +66,11 @@ namespace GenericAI.App
                             // ZMQ result mode does not need analytics_event_api_url;
                             // only the HTTP path is gated on it.
                             string url = channel.Parameters.Url;
+#if USE_ZMQ
                             if (_zmq == null && string.IsNullOrEmpty(url)) continue;
+#else
+                            if (string.IsNullOrEmpty(url)) continue;
+#endif
 
                             // Parked payload first: one attempt per backoff
                             // window, by whichever worker visits first (the
@@ -149,12 +160,14 @@ namespace GenericAI.App
 
         private async Task<bool> TrySendOnceAsync(string url, byte[] payload, int port, CancellationToken ct)
         {
+#if USE_ZMQ
             // ZMQ result plane: PUSH the same JSON payload instead of HTTP POST.
             if (_zmq != null)
             {
                 bool ok = _zmq.Send(payload);
                 if (ok)
                 {
+                    ConsoleLog.WriteLine("Detected!! send analytics result to server!!");
                     FileLogger.Info($"Analytics result sent over ZMQ (ch={port})");
                 }
                 else
@@ -164,10 +177,12 @@ namespace GenericAI.App
                 }
                 return ok;
             }
+#endif
 
             try
             {
                 await _client.PostAsync(url, payload).ConfigureAwait(false);
+                ConsoleLog.WriteLine("Detected!! send analytics result to server!!");
                 FileLogger.Info($"Analytics result posted ok (ch={port})");
                 return true;
             }

@@ -19,11 +19,22 @@
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
     <OutputPath>$(SolutionDir)bin\$(Configuration)\x64\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <DefineConstants>DEBUG;TRACE;USE_ZMQ</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>$(SolutionDir)bin\$(Configuration)\x64\</OutputPath>
+    <DefineConstants>TRACE;USE_ZMQ</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- No-ZMQ build: same code, USE_ZMQ not defined -> ZmqResultSender + libzmq P/Invoke
+       and the ZMQ frame receiver are compiled out; the output carries no libzmq. -->
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release-NoZmq|x64' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
@@ -49,6 +60,8 @@
     <Compile Include="CommandLineArgs.cs" />
     <Compile Include="ZmqResultSender.cs" />
     <Compile Include="HealthState.cs" />
+    <Compile Include="Protocol.cs" />
+    <Compile Include="SettingsSchema.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Http\HttpEnvelope.cs" />
     <Compile Include="Http\HttpListenerHost.cs" />

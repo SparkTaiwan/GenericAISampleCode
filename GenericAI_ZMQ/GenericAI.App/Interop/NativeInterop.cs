@@ -69,11 +69,13 @@ namespace GenericAI.App
 
         // Per-channel ai_settings (spec §5). Scalars so it needs no ABI struct change.
         // Object detection: confidence (0..1; <0 clears) + classMask (bitmask over
-        // SupportedClasses index; <0 => all). Motion: sensitivity + threshold
-        // (0..100; <0 => keep per-ROI value). Pass <0 for keys a detector doesn't use.
+        // SupportedClasses index; <0 => all) + min/maxObjectSize (box area band as % of frame,
+        // 0..100; min 0/<0 => no lower limit, max >=100/<0 => no upper limit). Motion: sensitivity
+        // + threshold (0..100; <0 => keep per-ROI value). Pass <0 for keys a detector doesn't use.
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_SetChannelAiSettings(
-            int port, float confidence, int classMask, int sensitivity, int threshold);
+            int port, float confidence, int classMask, int sensitivity, int threshold,
+            float minObjectSize, float maxObjectSize);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GAI_RegisterCallback(CallBackFunction cb);
@@ -92,6 +94,7 @@ namespace GenericAI.App
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern int GAI_GetInitError(System.Text.StringBuilder buf, int bufLen);
 
+#if USE_ZMQ
         // ZMQ frame plane. Call after GAI_InitializeChannels and before the first
         // /SetParameters. endpoint = the module's bound PUSH address; this side
         // connects a PULL socket to it. Returns 0 on success. When used, frames
@@ -101,5 +104,6 @@ namespace GenericAI.App
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GAI_StopZmqReceiver();
+#endif
     }
 }

@@ -1,4 +1,5 @@
 #pragma once
+#ifdef USE_ZMQ  // ZMQ frame transport (ffmpeg/libzmq) -- excluded from Release-NoZmq
 
 #include <cstdint>
 #include <functional>
@@ -57,3 +58,4 @@ private:
 };
 
 }  // namespace gai
+#endif // USE_ZMQ

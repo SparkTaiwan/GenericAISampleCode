@@ -130,18 +130,23 @@ namespace GenericAI.App
                     else if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/Alive")
                     {
                         // The process is alive (HTTP 200) but the body reports health:
-                        //   {"status":"ok"}                         -> functional
-                        //   {"status":"error","message":"<reason>"} -> degraded (e.g.
-                        //   the detector/model failed to load). The recorder reads this
-                        //   to surface the error instead of pointlessly restarting us.
+                        //   {"status":"ok","version":"1.3"}                         -> functional
+                        //   {"status":"error","version":"1.3","message":"<reason>"} -> degraded
+                        //   (e.g. the detector/model failed to load). The recorder reads
+                        //   `status` to surface the error instead of pointlessly restarting
+                        //   us, and `version` to learn which protocol level to speak when it
+                        //   POSTs /SetParameters. Always present so it is available even in
+                        //   the degraded state.
+                        string versionField = "\"version\":"
+                            + JsonConvert.SerializeObject(Protocol.Version);
                         string aliveBody;
                         if (HealthState.IsHealthy)
                         {
-                            aliveBody = "{\"status\":\"ok\"}";
+                            aliveBody = "{\"status\":\"ok\"," + versionField + "}";
                         }
                         else
                         {
-                            aliveBody = "{\"status\":\"error\",\"message\":"
+                            aliveBody = "{\"status\":\"error\"," + versionField + ",\"message\":"
                                 + JsonConvert.SerializeObject(HealthState.Error) + "}";
                         }
                         await Write(resp, 200, "application/json", aliveBody);
@@ -223,6 +228,7 @@ namespace GenericAI.App
             // ai_settings (schema); v1.2 keeps the legacy top-level field (below).
             string version = null;
             int? jpgFromSchema = null;
+            int? triggerIntervalFromSchema = null;
             try
             {
                 var root = Newtonsoft.Json.Linq.JObject.Parse(body);
@@ -236,6 +242,9 @@ namespace GenericAI.App
 
                     // Apply the per-channel values to native (spec §5).
                     jpgFromSchema = ExtractInt(aiSettings, "jpg_compress");
+                    // Motion-only wrapper-side send throttle (not a native setting): min seconds between
+                    // HTTP POSTs. Absent for object detection -> stays null -> ParameterStore unchanged.
+                    triggerIntervalFromSchema = ExtractInt(aiSettings, "trigger_interval");
                     ApplyAiSettingsToNative(_port, aiSettings);
                 }
             }
@@ -263,7 +272,7 @@ namespace GenericAI.App
 
             try
             {
-                _params.Update(settings.analytics_event_api_url, settings.jpg_compress);
+                _params.Update(settings.analytics_event_api_url, settings.jpg_compress, triggerIntervalFromSchema);
                 NativeInterop.GAI_SetChannelParameters(_port, ref settings);
             }
             catch (Exception ex)
@@ -310,12 +319,19 @@ namespace GenericAI.App
             int? classMask = ExtractClassMask(aiSettings);
             int? sensitivity = ExtractInt(aiSettings, "sensitivity");
             int? threshold = ExtractInt(aiSettings, "threshold");
-            if (conf.HasValue || classMask.HasValue || sensitivity.HasValue || threshold.HasValue)
+            // Object detection object-size band (% of frame area, 0..100). Absent -> pass <0
+            // (that bound = no filter).
+            float? objSizeMin = ExtractFloat(aiSettings, "object_size_min");
+            float? objSizeMax = ExtractFloat(aiSettings, "object_size_max");
+            if (conf.HasValue || classMask.HasValue || sensitivity.HasValue || threshold.HasValue
+                || objSizeMin.HasValue || objSizeMax.HasValue)
             {
                 NativeInterop.GAI_SetChannelAiSettings(port,
-                    conf ?? -1f, classMask ?? -1, sensitivity ?? -1, threshold ?? -1);
+                    conf ?? -1f, classMask ?? -1, sensitivity ?? -1, threshold ?? -1,
+                    objSizeMin ?? -1f, objSizeMax ?? -1f);
                 ConsoleLog.WriteLine($"ai_settings applied: ch{port} confidence={(conf.HasValue ? conf.Value.ToString() : "-")}"
-                    + $" classMask=0x{(classMask ?? -1):X} sensitivity={(sensitivity?.ToString() ?? "-")} threshold={(threshold?.ToString() ?? "-")}");
+                    + $" classMask=0x{(classMask ?? -1):X} sensitivity={(sensitivity?.ToString() ?? "-")} threshold={(threshold?.ToString() ?? "-")}"
+                    + $" object_size_min={(objSizeMin?.ToString() ?? "-")} object_size_max={(objSizeMax?.ToString() ?? "-")}");
             }
         }
 
@@ -373,6 +389,33 @@ namespace GenericAI.App
             return null;
         }
 
+        // A scalar float field by key. flat ({"object_size_min":2.5}) or schema-shaped
+        // ({"fields":[{"key":"object_size_min","value":2.5}]}). null if absent.
+        private static float? ExtractFloat(JToken aiSettings, string key)
+        {
+            try
+            {
+                JToken flat = aiSettings[key];
+                if (flat != null && flat.Type != JTokenType.Object && flat.Type != JTokenType.Array)
+                    return (float)flat;
+
+                if (aiSettings["fields"] is JArray fields)
+                {
+                    foreach (JToken f in fields)
+                    {
+                        if ((string)f["key"] == key)
+                        {
+                            JToken v = f["value"] ?? f["default"];
+                            if (v != null && v.Type != JTokenType.Object && v.Type != JTokenType.Array)
+                                return (float)v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         // classes string_array -> supported-class bitmask (NativeInterop.SupportedClasses
         // order). flat ({"classes":["person","car"]}) or schema-shaped
         // ({"fields":[{"key":"classes","value":[...]}]}). null if absent.
@@ -420,7 +463,7 @@ namespace GenericAI.App
 
             NativeInterop.SettingParameters s = new NativeInterop.SettingParameters
             {
-                version = "1.3",
+                version = Protocol.Version,
                 analytics_event_api_url = data.analytics_event_api_url ?? "",
                 image_width = data.image_width.Value,
                 image_height = data.image_height.Value,

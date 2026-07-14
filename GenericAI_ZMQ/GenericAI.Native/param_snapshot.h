@@ -28,7 +28,10 @@ public:
     // over class_table.h supported index, or <0 for "all supported". sensitivity /
     // threshold: 0..100 motion tunables that override the per-ROI values, or <0 to
     // leave the per-ROI value in place.
-    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold);
+    // min/max_object_size: object detection bounding-box area band as % of frame (0..100);
+    // min 0 = no lower limit, max >=100 = no upper limit; <0 to leave unset.
+    void ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold,
+                         float min_object_size, float max_object_size);
     View Take() const;
 
 private:
@@ -47,6 +50,8 @@ private:
     int   ai_class_mask_  = -1;
     int   ai_sensitivity_ = -1;   // motion: overrides per-ROI sensitivity when >= 0
     int   ai_threshold_   = -1;   // motion: overrides per-ROI threshold when >= 0
+    float ai_min_object_size_ = -1.0f;   // object detection: min box area as % of frame (0..100)
+    float ai_max_object_size_ = -1.0f;   // object detection: max box area as % of frame (0..100)
 };
 
 }  // namespace gai

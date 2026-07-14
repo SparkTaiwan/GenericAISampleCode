@@ -52,6 +52,11 @@ struct DetectorParams {
     // Bitmask over class_table.h supported-class index (bit i => kSupportedClasses[i]
     // enabled). -1 = unset -> detector reports all supported classes.
     int class_mask = -1;
+    // Object size band as a percentage of frame area (0..100), supplied via
+    // GAI_SetChannelAiSettings. Detections whose bounding-box area is below min or
+    // above max are dropped. min: <0/0 = no lower limit. max: <0 or >=100 = no upper limit.
+    float min_object_size = -1.0f;
+    float max_object_size = -1.0f;
 };
 
 // Abstract detector. Implementations must be stateless w.r.t. channels —

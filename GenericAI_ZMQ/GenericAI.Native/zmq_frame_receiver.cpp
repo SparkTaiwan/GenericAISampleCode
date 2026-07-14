@@ -1,4 +1,5 @@
 #include "pch.h"
+#ifdef USE_ZMQ  // ZMQ frame transport (ffmpeg/libzmq) -- excluded from Release-NoZmq
 #include "zmq_frame_receiver.h"
 #include "zmq_frame_header.h"
 #include "nal_decoder.h"
@@ -204,3 +205,4 @@ void ZmqFrameReceiver::Stop() {
 }
 
 }  // namespace gai
+#endif // USE_ZMQ

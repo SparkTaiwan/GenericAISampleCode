@@ -1,3 +1,6 @@
+// ZMQ result transport -- compiled only when USE_ZMQ is defined.
+// Release-NoZmq leaves this out, so the output has no libzmq dependency.
+#if USE_ZMQ
 using System;
 using System.Runtime.InteropServices;
 
@@ -70,3 +73,4 @@ namespace GenericAI.App
         }
     }
 }
+#endif // USE_ZMQ

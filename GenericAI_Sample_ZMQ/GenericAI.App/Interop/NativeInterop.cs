@@ -56,6 +56,7 @@ namespace GenericAI.App
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_Deinitialize();
 
+#if USE_ZMQ
         // ZMQ frame plane. Call after GAI_InitializeChannels and before the first
         // /SetParameters. endpoint = the module's bound PUSH address; this side
         // connects a PULL socket to it. When used, frames arrive over ZMQ
@@ -65,5 +66,6 @@ namespace GenericAI.App
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GAI_StopZmqReceiver();
+#endif
     }
 }

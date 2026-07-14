@@ -36,11 +36,18 @@ namespace GenericAI.App
         private static Dictionary<int, ChannelHandle> _byChannelId;
         private static List<Task> _encodeTasks;
         private static List<Task> _sendTasks;
+#if USE_ZMQ
         private static ZmqResultSender _zmqResultSender;  // null => HTTP results
+#endif
         private static CancellationTokenSource _shutdownCts;
 
         public static async Task<int> Main(string[] args)
         {
+            // Load the debug switch first so it gates every ConsoleLog.WriteLine below.
+            // Drop a "GenericAI.Config" next to the exe with "show_debug = 1" to see the
+            // verbose output; no rebuild needed.
+            ConsoleLog.LoadFromConfig();
+
             ConsoleLog.WriteLine(CommandLineArgs.Usage());
 
             if (!CommandLineArgs.TryParse(args, out CommandLineArgs parsed, out string err))
@@ -207,6 +214,7 @@ namespace GenericAI.App
                         _encodeTasks.Add(w.RunAsync(_shutdownCts.Token));
                     }
 
+#if USE_ZMQ
                     // Result plane: ZMQ PUSH (connect to the module's bound PULL) when
                     // result_endpoint is given, else HTTP POST to analytics_event_api_url.
                     if (parsed.UseZmqResults)
@@ -224,16 +232,22 @@ namespace GenericAI.App
                             return ExitNativeFailed;
                         }
                     }
+#endif
 
                     _sendTasks = new List<Task>();
                     for (int i = 0; i < parsed.SendWorkers; i++)
                     {
+#if USE_ZMQ
                         SendWorker w = new SendWorker(channelsByIdx, postClient, drops, _zmqResultSender);
+#else
+                        SendWorker w = new SendWorker(channelsByIdx, postClient, drops);
+#endif
                         _sendTasks.Add(w.RunAsync(_shutdownCts.Token));
                     }
 
                     _ = Task.Run(() => DropReporterAsync(drops, _shutdownCts.Token));
 
+#if USE_ZMQ
                     // Frame source: ZMQ (NAL) when frame_endpoint is given, else MMF.
                     // Start BEFORE the listeners serve /SetParameters so channels are
                     // already in ZMQ mode (they skip the MmfReader). GAI_Deinitialize
@@ -250,6 +264,7 @@ namespace GenericAI.App
                         ConsoleLog.WriteLine($"ZMQ frame source: connect PULL -> {parsed.FrameEndpoint}");
                         FileLogger.Info($"ZMQ frame receiver started, endpoint={parsed.FrameEndpoint}");
                     }
+#endif
                 }
 
                 VerboseConsole("");
@@ -350,9 +365,11 @@ namespace GenericAI.App
                 }
                 catch { }
 
+#if USE_ZMQ
                 // Send workers have joined -> no more ZMQ result sends; close the
                 // result socket (LINGER=0, so this never blocks).
                 try { _zmqResultSender?.Dispose(); } catch { }
+#endif
 
                 // After workers have joined, drain any I420 buffers that the
                 // EncodeWorker left in EncodeQ when its CTS got cancelled.

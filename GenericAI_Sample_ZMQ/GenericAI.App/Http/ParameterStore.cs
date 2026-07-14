@@ -11,16 +11,24 @@ namespace GenericAI.App
         private readonly object _lock = new object();
         private volatile string _url = "";
         private volatile int _jpgQuality = 50;
+        // Min seconds between result sends (motion schema "trigger_interval"). 0 = no
+        // limit (send on every trigger). Read by the send throttle in Program.cs.
+        private volatile int _triggerIntervalSec = 1;
 
-        public string Url        => _url;
-        public int    JpgQuality => _jpgQuality;
+        public string Url                => _url;
+        public int    JpgQuality         => _jpgQuality;
+        public int    TriggerIntervalSec => _triggerIntervalSec;
 
-        public void Update(string url, int jpgCompress)
+        // triggerIntervalSec is nullable: null (v1.2 / not in the schema) leaves the
+        // current value unchanged; a value updates it (0 disables throttling).
+        public void Update(string url, int jpgCompress, int? triggerIntervalSec = null)
         {
             lock (_lock)
             {
                 // Clamp to the JPEG encoder's valid 1..100 quality range.
                 if (jpgCompress > 0) _jpgQuality = System.Math.Min(jpgCompress, 100);
+                if (triggerIntervalSec.HasValue && triggerIntervalSec.Value >= 0)
+                    _triggerIntervalSec = triggerIntervalSec.Value;
                 _url = url ?? "";
             }
         }

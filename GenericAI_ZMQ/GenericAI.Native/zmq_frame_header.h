@@ -1,4 +1,5 @@
 #pragma once
+#ifdef USE_ZMQ  // ZMQ frame transport (ffmpeg/libzmq) -- excluded from Release-NoZmq
 
 #include <cstdint>
 
@@ -37,3 +38,4 @@ enum class ZmqCodec : uint8_t {
 };
 
 }  // namespace gai
+#endif // USE_ZMQ

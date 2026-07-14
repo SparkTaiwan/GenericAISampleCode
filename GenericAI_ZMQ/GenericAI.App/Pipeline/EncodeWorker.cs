@@ -50,6 +50,17 @@ namespace GenericAI.App
 
                         ChannelHandle channel = _channelsByIdx[idx];
 
+                        // Trigger-interval throttle: at most one send per trigger_interval seconds per
+                        // channel (0 = no limit). Checked BEFORE the JPEG encode so suppressed frames
+                        // cost nothing. Both schemas (motion and object detection) define trigger_interval
+                        // with default 1, so this throttle applies to both detectors.
+                        if (!channel.TryPassTriggerInterval(channel.Parameters.TriggerIntervalSec))
+                        {
+                            try { FrameDispatcher.FramePool.Return(raw.FrameI420, clearArray: false); } catch { }
+                            try { TimingRecorder.Instance.Flush(raw.Timestamp, TimingRecorder.FrameState.DroppedThrottled); } catch { }
+                            continue;
+                        }
+
                         byte[] buf = raw.FrameI420;
                         try
                         {
@@ -74,10 +85,12 @@ namespace GenericAI.App
 
                                 TimingRecorder.Instance.MarkJpegDone(raw.Timestamp);
 
-                                // Per-class counts -> "<Class>__Count" metadata items
-                                // (spec §2.2/§3.1: capitalised class name + "__Count"
-                                // suffix; the recorder keys counting off "__Count").
+                                // Per-class counts -> metadata items. The item name is the schema key
+                                // (SupportedClasses value == SettingsSchema `classes` option, e.g. "person"):
+                                // the schema's counting list already tells the recorder which items count,
+                                // so there is NO "__Count" suffix -- the name is sent exactly as the schema key.
                                 System.Collections.Generic.List<HttpEnvelope.EnvelopeItem> items = null;
+                                string detectSummary = null;   // "person=3, car=1" for the console, so recognition can be eyeballed
                                 if (raw.ClassCounts != null)
                                 {
                                     int m = Math.Min(raw.ClassCounts.Length, NativeInterop.SupportedClasses.Length);
@@ -85,21 +98,25 @@ namespace GenericAI.App
                                     {
                                         if (raw.ClassCounts[i] <= 0) continue;
                                         if (items == null) items = new System.Collections.Generic.List<HttpEnvelope.EnvelopeItem>();
-                                        string cls = NativeInterop.SupportedClasses[i];
-                                        string name = cls.Length == 0
-                                            ? cls
-                                            : char.ToUpperInvariant(cls[0]) + cls.Substring(1);
                                         items.Add(new HttpEnvelope.EnvelopeItem
                                         {
-                                            name = name + "__Count",
+                                            name = NativeInterop.SupportedClasses[i],
                                             value = raw.ClassCounts[i].ToString(),
                                         });
+                                        detectSummary = (detectSummary == null ? "" : detectSummary + ", ")
+                                            + NativeInterop.SupportedClasses[i] + "=" + raw.ClassCounts[i];
                                     }
                                 }
 
+                                // Object-detection: show WHAT was recognized on this channel (only when
+                                // there are class counts; motion has none and is covered by SendWorker's
+                                // "Detected!!" line). Lets you confirm the recognition is correct.
+                                if (detectSummary != null)
+                                    ConsoleLog.WriteLine($"[ch{raw.Port}] Recognized: {detectSummary}");
+
                                 HttpEnvelope env = new HttpEnvelope
                                 {
-                                    version = "1.3",
+                                    version = Protocol.Version,
                                     port_num = raw.Port,
                                     keyframe = jpeg,
                                     timestamp = raw.Timestamp,
