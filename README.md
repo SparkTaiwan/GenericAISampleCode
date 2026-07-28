@@ -1,195 +1,150 @@
-
 # GenericAISampleCode
 
-A generic AI integration sample project. This repository demonstrates how to build a cross-language AI interface using HTTP/JSON for control and shared memory for frame transfer, enabling integration between NVR/CMS systems and various AI modules. Besides the reference samples (C#, Python) it also hosts the production multi-channel wrapper (`GenericAI/`).
+Sample and reference code for integrating an external AI/analytics module with **Spark Recorder** (and compatible NVR/CMS systems). The recorder streams encoded video to an AI wrapper process, the wrapper runs detection and streams analytics results back. Control and configuration use **HTTP/JSON**; video frames and results use a **ZMQ** transport (with a legacy shared-memory + HTTP path kept for backward compatibility).
 
-## Project Structure
+## Project structure
 
-### GenericAI/
+The repository currently hosts three variants:
 
-The production multi-channel AI wrapper that replaces the single-channel `CSharp/` sample: a C# host process (`GenericAI.exe`) plus a C++ detector DLL (`GenericAI.Native.dll`, Motion or YOLOX person detection) serving N video channels from one process. See [GenericAI/README.md](GenericAI/README.md) (English) or [GenericAI/README_zhTW.md](GenericAI/README_zhTW.md) (繁體中文).
+| Folder | What it is | Detectors | Transport | Own README |
+| --- | --- | --- | --- | --- |
+| [`GenericAI_ZMQ/`](GenericAI_ZMQ/) | **Production** multi-channel wrapper. One process serves N channels through a shared detector backend, with full diagnostics (file logging, timing, health/degraded reporting). | Motion (frame-diff) **and** YOLOX-M person (ONNX Runtime / DirectML, CPU fallback) | ZMQ (default) **or** MMF+HTTP (legacy) | [EN](GenericAI_ZMQ/README.md) / [繁中](GenericAI_ZMQ/README_zhTW.md) |
+| [`GenericAI_Sample_ZMQ/`](GenericAI_Sample_ZMQ/) | **Minimal reference** for the packet flow. Same transport + HTTP control + settings-schema contract as the production wrapper, but the detector stack and diagnostic infra are stripped so the wire behaviour is easy to read. | Motion only | ZMQ **or** MMF+HTTP | — |
+| [`GenericAI_Linux/`](GenericAI_Linux/) | Placeholder for a Linux port (not yet populated). | — | — | — |
 
-### CSharp/
+Both wrappers are the same shape: a **C# host** (`GenericAI.exe`, .NET Framework 4.8) plus a **C++ detector DLL** (`GenericAI.Native.dll`) exporting a `GAI_*` C ABI. The C# side owns the HTTP control listeners, the ZMQ result sender / MMF readers, and JPEG encode + send; the native side owns frame decode (H.264/H.265 NAL over ZMQ) and detection.
 
-The original single-channel C# sample wrapper (`SampleWrapper.exe`), kept as reference code. This folder includes:
+### Which one should I use?
 
-- **Program.cs**: Main program logic, DLL invocation, and callback handling.
-- **SimpleHttpClient.cs** / **SimpleHttpServer.cs**: HTTP client / server for analytics results, parameters, and health checks.
-- **FileLogger.cs** / **TurboJpegInterop.cs**: file logging and libjpeg-turbo JPEG encoding.
-- **SampleDLL/**: C++ DLL project for shared memory handling, image analysis, and callback mechanisms.
-- **SampleWrapper.sln** / **SampleWrapper.csproj**: Visual Studio solution and project files.
+- **Integrating / deploying** → `GenericAI_ZMQ/`. It is the wrapper Spark Recorder's `AStreamPerimeter_GenericAI` AI-service module talks to in production.
+- **Learning the protocol / building your own wrapper** → `GenericAI_Sample_ZMQ/`. Start here to see the minimal control + frame + result flow without the detector and diagnostics noise.
 
-The C# version demonstrates how to wrap AI modules and communicate with NVR/CMS systems using .NET. See [CSharp/README.md](CSharp/README.md).
+## Architecture and data flow
 
-### CSharp_Single/
-
-A variant of the C# sample exercising the v1.3 "Single mode" protocol, where one process opens multiple channels through a single DLL instead of one process per channel.
-
-### Python/
-
-Contains Python sample code, providing a re-implementation of the main logic with modern libraries. Key files include:
-
-- **analytics_engine.py**: Analytics engine (corresponding to C++ DLL functionality).
-- **data_structures.py**: Data structure definitions (corresponding to C# structs).
-- **detectors.py**: Detection module using YOLO for human detection.
-- **http_client.py**: Lightweight HTTP client (using requests library).
-- **http_server.py**: Lightweight HTTP server (using built-in http.server).
-- **image_processor.py**: Image processing module for YUV420 to RGB/JPEG conversion.
-- **main.py**: Main program (corresponding to Program.cs).
-- **test_yolo_detector.py**: YOLO detector test script.
-- **requirements.txt**: Python dependencies.
-- **yolov8n.pt**: YOLO model file.
-- **build.bat**: Windows build script for creating executable.
-- **SampleWrapper.spec**: PyInstaller configuration for packaging.
-
-The Python version is designed to be lightweight, cross-platform, and easy to extend, using YOLO for human detection instead of traditional computer vision methods.
-
-### TestProg/
-
-Contains the prebuilt test program (`Spark_Test_Prog.exe` with its OpenCV / FFmpeg runtime and `param.json`) for integration testing. The source code for this part will be organized and uploaded in future updates.
-
-### Documentation
-
-- **SparkARGO-ARGO Generic AI Integration Sample Code Guide Version 1.2.pdf**: English guide providing an overview of the architecture and design principles.
-
-## Architecture (textual)
-
-The following is a text-first representation of the runtime architecture and data flow between the test program (represented by `Spark_Test_Prog.exe` — "ARGO") and the `SampleWrapper.exe` wrapper. It reproduces the diagram information in plain text so it is visible in any viewer.
-
-Textual diagram (left = ARGO / Spark_Test_Prog.exe, right = SampleWrapper.exe):
+Three independent planes connect the recorder (left) and the AI wrapper (right):
 
 ```text
-ARGO / Spark_Test_Prog.exe                   SampleWrapper.exe
-+---------------------------+                  +---------------------------+
-| Http Client               | ---(1) ----->    | Http Server               |
-| - Send Alive              |                  | - Receive Alive           |
-| - Send SetParameters      |                  | - Receive SetParameters   |
-| - Send License Check      | <---(1a)----     | - Receive License Check   |
-+---------------------------+                  +---------------------------+
+Spark Recorder / AStreamPerimeter_GenericAI        GenericAI.exe (wrapper)
++-------------------------------+                  +-------------------------------+
+| HTTP client  (control plane)  | --(1) request--> | HTTP listeners (per channel)  |
+|  - GET  /Alive                |                  |  - /Alive  (health / version) |
+|  - GET  /GetSettingsSchema    | <--(1a) reply--- |  - /GetSettingsSchema (UI)     |
+|  - POST /SetParameters        |                  |  - /SetParameters (config)    |
++-------------------------------+                  +-------------------------------+
 
-+---------------------------+                  +---------------------------+
-| Http Server               | <---(2)----      | Http Client               |
-| - Receive Analytics event |                  | - Post analytics result   |
-|   (Post from SampleWrap)  | ---(2a)---->     |   to ARGO                 |
-+---------------------------+                  +---------------------------+
++-------------------------------+                  +-------------------------------+
+| Frame plane (source)          | ==(2) frames===> | Frame plane (sink)            |
+|  ZMQ PUSH  (encoded H.264/5)  |                  |  ZMQ PULL -> NAL decode       |
+|   -- or legacy --             |                  |   -- or legacy --             |
+|  MMF writer (raw I420)        |                  |  MMF reader                   |
++-------------------------------+                  +-------------------------------+
 
-+---------------------------+                  +---------------------------+
-| Shared memory (writer)    | ===(3) frame===>  | Shared memory (reader)    |
-| - Writes frame bytes      |                  | - Reads frame bytes       |
-+---------------------------+                  +---------------------------+
++-------------------------------+                  +-------------------------------+
+| Result plane (sink)           | <=(3) results=== | Result plane (source)         |
+|  ZMQ PULL (analytics JSON)    |                  |  ZMQ PUSH                     |
+|   -- or legacy --             |                  |   -- or legacy --             |
+|  HTTP /PostAnalyticsResult    |                  |  HTTP POST                    |
++-------------------------------+                  +-------------------------------+
 ```
 
-Detailed sequence and data flows (numbered):
+1. **Control plane (HTTP/JSON).** The recorder probes `/Alive`, fetches the dynamic settings UI with `/GetSettingsSchema`, and pushes per-channel configuration (resolution, ROIs, AI settings) with `POST /SetParameters`. These listeners stay on the wrapper's control port (`port=` = the recorder's `exe_server_port`) regardless of the frame/result transport.
+2. **Frame plane.** In ZMQ mode the recorder PUSHes encoded access units and the wrapper decodes them (offloading decode to the AI host, so it works remotely). In legacy MMF mode the recorder writes raw I420 frames into per-channel shared memory.
+3. **Result plane.** Analytics results (JSON: `port_num`, keyframe JPEG, ROI hits, per-class counts) go back over a ZMQ PUSH→PULL pair, or, in legacy mode, an HTTP POST to `analytics_event_api_url` (`/PostAnalyticsResult`).
 
-1) Control / configuration flow (HTTP):
-   - `Spark_Test_Prog.exe` (ARGO) acts as an HTTP client and sends control messages to `SampleWrapper.exe` HTTP server:
-     - Send Alive (health check)
-     - Send `SetParameters` (analytics configuration JSON)
-     - Send license check requests
-   - `SampleWrapper.exe` responds with HTTP status (OK/400/etc.).
+The recorder binds the ZMQ sockets and the wrapper connects to them, so the wrapper can be (re)started independently and ZMQ reconnects automatically. Frame and result planes use **separate** ports: the frame plane connects to the recorder's `ai_stream_port`, the result plane to its `http_server_port`. See [GenericAI_ZMQ/README.md](GenericAI_ZMQ/README.md) for the full launch reference.
 
-2) Analytics result flow (HTTP):
-   - After analyzing frames, `SampleWrapper.exe` posts analytics results to ARGO's HTTP server (example endpoint: `/PostAnalyticsResult`).
-   - ARGO responds with a confirmation (HTTP OK) upon receipt.
+## Settings schema and scopes
 
-3) Frame / image flow (shared memory):
-   - ARGO writes raw frame/image bytes into a named shared memory segment (includes header fields like status, width, height, timestamp, size).
-   - `SampleWrapper.exe` reads frames from that shared memory for analysis.
+`GET /GetSettingsSchema` returns a JSON schema the ConfigClient renders into the AI-settings UI; the filled values come back verbatim in `SetParameters`. Every field declares a **scope** that says where it is edited and how it flows on the wire:
 
-Common endpoints and responsibilities:
-- `POST /SetParameters` — set analytics parameters (JSON payload).
-- `GET /Alive` — health check from ARGO to SampleWrapper.
-- `GET /GetLicense` — license validation/request.
-- `POST /PostAnalyticsResult` — endpoint on ARGO to receive analytics/detection results.
+| scope | one value per… | edited on | carried in |
+| --- | --- | --- | --- |
+| `device` | whole device | device page | top-level `ai_settings` (device-wide) |
+| `channel` | smart stream | stream page | top-level `SetParameters.ai_settings` |
+| `roi` | detection region | ROI editor | per entry in `SetParameters.rois[i]` |
 
-Implementation notes:
-- Shared memory is used for high-throughput frame transfer; control and result messages use HTTP/JSON.
-- The C# examples define shared-memory layout (`MMF_Data` struct) and HTTP handlers; the Python example follows the same high-level contract.
-- Separating control (HTTP) and frame transfer (shared memory) reduces IPC overhead and keeps the protocol simple.
+Rule of thumb: "what counts as a hit" (detection tuning) → `roi`; "how we output / the whole stream" → `channel`; "one setting for the entire device" → `device`. `GenericAI_Sample_ZMQ` ships a motion schema with one field of every scope as a worked example (see its `SettingsSchema.cs`).
 
-## SampleWrapper runtime flow
+## Getting started
 
-This section describes the runtime behavior and internal processing steps of `SampleWrapper.exe` (the wrapper that performs analytics). Follow these steps to understand what the wrapper does after it starts.
+Prerequisites and full build/run instructions live in the per-project README. In short, from a wrapper folder:
 
-1. Start HTTP server
-   - On startup, `SampleWrapper.exe` creates and starts an HTTP server (port configurable via CLI or config). The server exposes endpoints for control and status (for example, `/Alive`, `/SetParameters`, `/GetLicense`) and returns appropriate HTTP responses.
-
-2. Receive `SetParameters`
-   - When `POST /SetParameters` is received, the server parses the JSON payload and extracts:
-     a. Supported version number(s)
-     b. Post URL for analytics results (`analytics_event_api_url`)
-     c. Image width and height (`image_width`, `image_height`)
-     d. ROI and other detection-related settings (`sensitivity`, `threshold`, `rois`, `jpg_compress`, etc.)
-
-3. Create shared memory
-   - Using the information from `SetParameters` (image size, frame size), the wrapper creates or opens the named shared-memory segment that will be used to read frames. It sets up any internal buffers and state needed to read frame headers (status flags, timestamps, sizes).
-
-4. Read frames from shared memory and run detection
-   - The wrapper continuously polls or waits on the shared-memory segment to find new frames (status flag indicating a fresh frame).
-   - When a new frame is available, it reads the frame bytes (using the agreed header format), converts/decodes if necessary, and passes the frame into the detection pipeline (YOLO model, native DLL, or other analyzer).
-
-5. Post analytics results to ARGO
-   - After inference, the wrapper formats the detection result into the agreed JSON schema (versioned) and POSTs it to the `analytics_event_api_url` provided in step 2 (ARGO's HTTP endpoint).
-   - It expects an HTTP OK response and may retry or log errors on failure.
-
-Continuous operation and control
-   - Steps 4 and 5 repeat continuously while the wrapper is running; the wrapper also concurrently accepts and responds to `Alive` and `GetLicense` requests at any time.
-   - `Alive` should return a simple status (OK + optional metadata). `GetLicense` should validate or return license status per the implementation.
-
-Notes and implementation tips
-   - The shared-memory header (see `MMF_Data` in `CSharp/SampleDLL/dllmain.cpp`) contains useful fields (header/footer markers, status, `image_width`/`image_height`, `image_size`, `timestamp`) — follow the same layout for cross-language compatibility.
-   - Keep HTTP control logic separate from the frame read / detection loop (use separate threads or async tasks) so control endpoints remain responsive.
-   - Implement exponential backoff or retry logic when posting results to ARGO to handle transient network errors.
-
-## Getting Started
-
-### Prerequisites
-
-- For C#: Visual Studio 2022 with .NET Framework support.
-- For Python: Python 3.8+, pip for package management.
-
-### Running the Python Version
-
-1. Install dependencies:
-
-   ```bash
-   pip install -r Python/requirements.txt
-   ```
-
-2. Run the main program:
-
-   ```bash
-   python Python/main.py -port=51000
-   ```
-
-   For debug mode:
-
-   ```bash
-   python Python/main.py -port=51000 debug
-   ```
-
-3. Set parameters via API:
-
-   ```bash
-   curl -X POST http://127.0.0.1:51000/SetParameters -H "Content-Type: application/json" -d '{"version": "1.2", "analytics_event_api_url": "http://127.0.0.1:9901/PostAnalyticsResult", "image_width": 1280, "image_height": 720, "jpg_compress": 75, "rois": [{"sensitivity": 50, "threshold": 50, "rects": [{"x": 8, "y": 8}, {"x": 8, "y": 717}, {"x": 1277, "y": 8}, {"x": 1277, "y": 717}]}]}'
-   ```
-
-### Building the Python Version
-
-Use the provided build script:
-
-```bash
-Python/build.bat
+```powershell
+nuget restore GenericAI.sln
+msbuild GenericAI.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-This creates a standalone executable in the `dist` directory.
+Output lands in `bin/Release/x64/`. Requirements (VS 2019/2022 with the **MSVC v140** toolset, .NET Framework 4.8, optional DirectML GPU) and the full dependency list are in [GenericAI_ZMQ/README.md](GenericAI_ZMQ/README.md).
 
-## Notes
+## Launching: ZMQ mode vs MMF mode
 
-- The repository provides sample code for C# and Python — you may choose either language as a starting point for your integration — plus the production-grade `GenericAI/` wrapper.
-- Test program source code will be organized and uploaded in future updates.
-- For details on the architecture and design, please refer to the provided PDF document.
+The wrapper picks its transport **purely from the launch arguments** — specifically, which ZMQ endpoints you pass. Nothing else selects the mode:
+
+- Pass a ZMQ endpoint for a plane → that plane uses ZMQ.
+- Omit it → that plane falls back to the legacy MMF/HTTP path.
+
+The frame plane and the result plane are chosen independently, so a mixed setup is possible, but the two normal configurations are below. In both, `port=` is always the **HTTP control port** (`/Alive`, `/SetParameters`) and equals the recorder's `exe_server_port`; only the frame/result **data** planes move.
+
+### ZMQ mode (production — works local or remote)
+
+The recorder BINDs the ZMQ sockets and the wrapper CONNECTs to them. Pass **both** endpoints, or the `server_ip` shorthand:
+
+```text
+:: explicit endpoints
+GenericAI.exe port=<exe_server_port> channel_count=<N> mode=single detector=motion ^
+              frame_endpoint=tcp://<recorderIP>:<ai_stream_port> ^
+              result_endpoint=tcp://<recorderIP>:<http_server_port>
+
+:: shorthand — expands to the two endpoints above
+GenericAI.exe port=<exe_server_port> channel_count=<N> mode=single detector=motion ^
+              server_ip=<recorderIP> stream_port=<ai_stream_port> result_port=<http_server_port>
+```
+
+- **Frames** arrive over ZMQ as encoded H.264/H.265 (the wrapper decodes them) → the frame plane connects to the recorder's **`ai_stream_port`**.
+- **Results** are PUSHed back over ZMQ → the result plane connects to the recorder's **`http_server_port`** (a ZMQ PULL socket bound there — the port number is reused from that config field; it is **not** an HTTP server in ZMQ mode).
+- The three ports are independent: `port=` (control) ≠ `stream_port` (frames) ≠ `result_port` (results). A common mistake is pointing `result_port` at the stream port — then frames flow but results never arrive.
+- Requires **`mode=single`** (one process serves every channel, multiplexed by `channel_id`). ZMQ reconnects automatically, so the wrapper and recorder can start in any order.
+
+### MMF mode (legacy — same machine only)
+
+Pass **no** ZMQ endpoints. Frames come from shared memory and results go back over HTTP:
+
+```text
+:: one process, all channels
+GenericAI.exe port=<exe_server_port> channel_count=<N> mode=single detector=motion
+
+:: one process per channel — launched once per channel port
+GenericAI.exe port=<channelPort> mode=multi detector=motion
+```
+
+- **Frames** are read from a per-channel named shared-memory segment (`ChannelFrame_<port>`) that the recorder writes raw I420 into.
+- **Results** are HTTP-POSTed to the `analytics_event_api_url` the recorder supplies in `SetParameters` (its `/PostAnalyticsResult` endpoint).
+- Shared memory is local, so both processes must be on the **same machine**. The ffmpeg/libzmq DLLs are not exercised on this path.
+
+### Quick reference
+
+| | ZMQ mode | MMF mode |
+| --- | --- | --- |
+| Frame source | `frame_endpoint` set → ZMQ PULL (`ai_stream_port`) | unset → shared memory `ChannelFrame_<port>` |
+| Result sink | `result_endpoint` set → ZMQ PUSH (`http_server_port`) | unset → HTTP POST `/PostAnalyticsResult` |
+| Location | local **or** remote | local only |
+| `mode` | must be `single` | `single` or `multi` |
+| Codec on the wire | encoded H.264/H.265 (decoded by wrapper) | raw I420 |
+
+Running with **no** arguments (or F5 in Visual Studio) defaults to `port=46000`, one channel, MMF+HTTP, and the compiled default detector — a handy smoke test. Turn on `show_debug` (below) and the startup banner prints the chosen transport for each plane. Full per-argument reference: [GenericAI_ZMQ/README.md](GenericAI_ZMQ/README.md).
+
+## Runtime debug switches (`GenericAI_ZMQ` only)
+
+The production wrapper reads a plain-text `GenericAI.Config` next to `GenericAI.exe` — no rebuild needed, restart to apply. Values accept `1 / true / yes / on`:
+
+| Key | Effect |
+| --- | --- |
+| `show_debug` | C# verbose console output (SetParameters echo, `Detected!!`, and the `[ZMQ result] zmq_send OK/FAILED …` line at the send point). |
+| `show_native_debug` | Native informational console logs (`[MotionDetector]`, `[PersonDetector]`, `[AI]`, `[channel]`, `[zmq]`). |
+| `log_to_file` | Persist INFO/WARN/ERROR to `%ProgramData%\Spark\GenericAI\Logs\GenericAI-<basePort>.log`. |
+
+`GenericAI_Sample_ZMQ` keeps things minimal and logs directly to the console (no config gate).
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+Apache License 2.0.
