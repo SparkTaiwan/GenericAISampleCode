@@ -30,6 +30,15 @@ struct PersonDetectorContext : public gai::DetectorContext {
     // tally of the kept detections, fed to the C ABI callback.
     int class_mask = -1;
     int last_class_counts[gai::kNumSupportedClasses] = { 0 };
+    // Channel-wide ai_settings fallbacks, set on the prepare side (Detect /
+    // Phase1Prepare) and read by ApplyRoiFilter on the post side (which has no
+    // params). A ROI whose per-ROI value is unset (-1) inherits these. frame_w/h
+    // are this frame's dimensions, needed to turn object_size % into a pixel area.
+    float channel_conf = -1.0f;       // effective channel confidence (0..1)
+    float channel_size_min = -1.0f;   // % of frame area (0..100), <0 = no lower limit
+    float channel_size_max = -1.0f;   // % of frame area (0..100), <0/>=100 = no upper limit
+    int   frame_w = 0;
+    int   frame_h = 0;
 };
 
 // Person detector backed by ONNX Runtime. Auto-detects YOLOX / YOLOv6 /
@@ -56,6 +65,7 @@ public:
     int Detect(PersonDetectorContext& ctx,
                const unsigned char* yuv420_frame, int width, int height,
                const ROIRect* roi_rects, int roi_count,
+               const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                std::vector<int>& detected_roi_indices,
                const gai::DetectorParams& params);
 
@@ -70,10 +80,12 @@ public:
     //   -2    pool was closed (shutdown) before a slot was available
     int Phase1Prepare(PersonDetectorContext& ctx,
                       const unsigned char* yuv420_frame, int width, int height,
+                      const ROIRect* roi_rects, int roi_count,
                       const gai::DetectorParams& params);
     void Phase2Gpu(int detector_slot);
     int Phase3Post(PersonDetectorContext& ctx, int detector_slot,
                    const ROIRect* roi_rects, int roi_count,
+                   const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                    std::vector<int>& detected_roi_indices);
 
     // Wakes any thread blocked inside Phase1Prepare's slot acquire so the

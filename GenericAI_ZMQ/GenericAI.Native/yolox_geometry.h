@@ -77,7 +77,9 @@ inline void Nms(std::vector<ScoredBox>& boxes, float iou_thresh,
     std::vector<char> suppressed(boxes.size(), 0);
     for (size_t i = 0; i < boxes.size(); ++i) {
         if (suppressed[i]) continue;
-        kept.push_back(boxes[i].box);
+        DetectionRect kb = boxes[i].box;
+        kb.score = boxes[i].score;   // carry score for per-ROI confidence filtering
+        kept.push_back(kb);
         for (size_t j = i + 1; j < boxes.size(); ++j) {
             if (suppressed[j]) continue;
             if (Iou(boxes[i].box, boxes[j].box) > iou_thresh) {

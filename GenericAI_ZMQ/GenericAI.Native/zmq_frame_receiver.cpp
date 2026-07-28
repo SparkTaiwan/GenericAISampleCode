@@ -141,13 +141,13 @@ struct ZmqFrameReceiver::Impl {
                                 ++decodeCount;
                                 ch->SubmitDecodedFrame(i420, w, h, w * h * 3 / 2, ts);
                             });
-                if ((recvCount % 30) == 0) {
+                if ((recvCount % 30) == 0 && VerboseLogging()) {
                     std::cout << "[zmq] ch=" << ch->Port()
                               << " received=" << recvCount
                               << " decoded=" << decodeCount << std::endl;
                 }
             }
-            else if (!ch && (++recvCount % 30) == 0) {
+            else if (!ch && (++recvCount % 30) == 0 && VerboseLogging()) {
                 std::cout << "[zmq] WARN no channel for channel_id=" << hdr.channel_id
                           << " (check the 'channel=' arg matches a wrapper port)" << std::endl;
             }

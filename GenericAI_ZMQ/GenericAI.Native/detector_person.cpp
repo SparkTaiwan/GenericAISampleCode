@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "detector_person.h"
 #include "gai_config.h"
+#include "host_log.h"
 #include "timing_recorder.h"
 
 #include <onnxruntime_cxx_api.h>
@@ -313,7 +314,7 @@ struct PersonDetector::Impl {
             s.sx_lut.assign(static_cast<size_t>(input_w), 0);
         }
 
-        if (gai::kEnableTimingLog) {
+        if (gai::VerboseLogging()) {
             std::cout << "[AI] Person detector loaded: " << model_path
                       << " (input=" << input_w << "x" << input_h
                       << ", EP=" << backend_label << ")" << std::endl;
@@ -329,7 +330,7 @@ struct PersonDetector::Impl {
                 session = Ort::Session(env, wpath.c_str(), cpu_opts);
                 backend_label = "CPU";
                 LoadMetadata(model_path);
-                if (gai::kEnableTimingLog) {
+                if (gai::VerboseLogging()) {
                     std::cout << "[AI] Person detector now running on EP=CPU." << std::endl;
                 }
                 Warmup();
@@ -552,6 +553,7 @@ struct PersonDetector::Impl {
             sb.box.w = static_cast<int>(ww);
             sb.box.h = static_cast<int>(hh);
             sb.box.cls = best_cls;
+            sb.box.score = score;
             sb.score = score;
             proposals.push_back(sb);
         }
@@ -568,6 +570,25 @@ struct PersonDetector::Impl {
         }
         int ti = params.threshold; if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
         return 0.20f + (ti / 100.f) * 0.50f;
+    }
+
+    // Extraction (pre-NMS) confidence gate for a per-ROI world: the LOWEST effective
+    // confidence any ROI uses, so no box a ROI might want is dropped early. Per-ROI
+    // filtering re-applies each ROI's own confidence after NMS (ApplyRoiFilter). With
+    // no ROI override this equals the channel threshold, so busy-scene NMS load is
+    // unchanged in the common case.
+    float MinEffectiveConf(const ROIRect* roi_rects, int roi_count,
+                           const gai::DetectorParams& params) const {
+        const float channel = ComputeConfThreshold(params);
+        if (roi_count <= 0 || roi_rects == nullptr) return channel;
+        float m = channel;
+        for (int i = 0; i < roi_count; ++i) {
+            float c = roi_rects[i].confidence >= 0.0f
+                ? (roi_rects[i].confidence > 1.0f ? 1.0f : roi_rects[i].confidence)
+                : channel;
+            if (c < m) m = c;
+        }
+        return m;
     }
 
     // min_object_size is a percentage of frame area (0..100); convert to a 0..1 area
@@ -596,33 +617,68 @@ struct PersonDetector::Impl {
     void ApplyRoiFilter(PersonDetectorContext& ctx,
                         std::vector<DetectionRect>& raw,
                         const ROIRect* roi_rects, int roi_count,
+                        const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                         std::vector<int>& detected_roi_indices) {
         ctx.last_detections.clear();
         for (int i = 0; i < gai::kNumSupportedClasses; ++i) ctx.last_class_counts[i] = 0;
 
-        // Per-channel class filter: mask < 0 => all supported classes enabled.
-        const int mask = ctx.class_mask;
-        auto enabled = [mask](int cls) -> bool {
+        // class_table.h supported-index bitmask test; mask < 0 => all enabled.
+        auto classEnabled = [](int cls, int mask) -> bool {
             if (cls < 0 || cls >= gai::kNumSupportedClasses) return false;
             return mask < 0 || (mask & (1 << cls)) != 0;
         };
+        // Object-size band as % of frame area (0..100). min <=0 = no lower limit;
+        // max <=0 or >=100 = no upper limit.
+        auto sizeOk = [](const DetectionRect& b, float min_pct, float max_pct, int fw, int fh) -> bool {
+            if (fw <= 0 || fh <= 0) return true;
+            const float frame_area = static_cast<float>(fw) * static_cast<float>(fh);
+            if (frame_area <= 0.0f) return true;
+            const float box_area = static_cast<float>(b.w) * static_cast<float>(b.h);
+            if (min_pct > 0.0f && box_area < (min_pct / 100.0f) * frame_area) return false;
+            if (max_pct > 0.0f && max_pct < 100.0f && box_area > (max_pct / 100.0f) * frame_area) return false;
+            return true;
+        };
+
+        // A detection belongs to ROI r when its box overlaps that ROI. Prefer the
+        // actual polygon (Argo sends up to 10 points) and fall back to the rect
+        // bbox for a degenerate ROI (<3 points).
+        auto boxInRoi = [&](const DetectionRect& b, int r) -> bool {
+            if (static_cast<size_t>(r) < original_roi_points.size() &&
+                original_roi_points[r].size() >= 3) {
+                return BoxOverlapsPolygon(b, original_roi_points[r]);
+            }
+            return BoxOverlapsRoi(b, roi_rects[r]);
+        };
 
         if (roi_count <= 0 || roi_rects == nullptr) {
+            // No ROI: apply the channel-wide confidence/class/size (extraction is now
+            // permissive, so these must be re-checked here).
             for (auto& b : raw) {
-                if (!enabled(b.cls)) continue;
+                if (b.score < ctx.channel_conf) continue;
+                if (!classEnabled(b.cls, ctx.class_mask)) continue;
+                if (!sizeOk(b, ctx.channel_size_min, ctx.channel_size_max, ctx.frame_w, ctx.frame_h)) continue;
                 ctx.last_class_counts[b.cls]++;
                 ctx.last_detections.push_back(b);
             }
         } else {
             std::vector<char> roi_hit(roi_count, 0);
             for (const auto& b : raw) {
-                if (!enabled(b.cls)) continue;   // disabled class: no count, no ROI hit
                 bool keep = false;
                 for (int r = 0; r < roi_count; ++r) {
-                    if (BoxOverlapsRoi(b, roi_rects[r])) {
-                        roi_hit[r] = 1;
-                        keep = true;
-                    }
+                    const ROIRect& roi = roi_rects[r];
+                    // Per-ROI values fall back to the channel when unset (-1).
+                    const float conf = roi.confidence      >= 0.0f ? roi.confidence      : ctx.channel_conf;
+                    const int   mask = roi.class_mask       >= 0    ? roi.class_mask       : ctx.class_mask;
+                    const float smin = roi.object_size_min >= 0.0f ? roi.object_size_min : ctx.channel_size_min;
+                    const float smax = roi.object_size_max >= 0.0f ? roi.object_size_max : ctx.channel_size_max;
+
+                    if (b.score < conf) continue;
+                    if (!classEnabled(b.cls, mask)) continue;
+                    if (!sizeOk(b, smin, smax, ctx.frame_w, ctx.frame_h)) continue;
+                    if (!boxInRoi(b, r)) continue;
+
+                    roi_hit[r] = 1;
+                    keep = true;
                 }
                 if (keep) {
                     ctx.last_class_counts[b.cls]++;
@@ -663,6 +719,7 @@ std::unique_ptr<gai::DetectorContext> PersonDetector::CreateContext() {
 int PersonDetector::Detect(PersonDetectorContext& ctx,
                            const unsigned char* yuv420_frame, int width, int height,
                            const ROIRect* roi_rects, int roi_count,
+                           const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                            std::vector<int>& detected_roi_indices,
                            const gai::DetectorParams& params) {
     // Single-shot path. Runs PreFrame → GpuFrame → PostFrame on one acquired
@@ -678,8 +735,16 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
     if (++ctx.stride_counter < m_impl->stride_n) return 0;
     ctx.stride_counter = 0;
 
-    const float conf_threshold = m_impl->ComputeConfThreshold(params);
-    ctx.class_mask = params.class_mask;   // consumed by ApplyRoiFilter below
+    // Per-ROI world: extract at the lowest confidence any ROI wants and defer the
+    // size band to ApplyRoiFilter; store the channel fallbacks for ROIs that don't
+    // override. (Confidence/class/size are re-applied per ROI after NMS.)
+    const float extract_conf = m_impl->MinEffectiveConf(roi_rects, roi_count, params);
+    ctx.class_mask       = params.class_mask;
+    ctx.channel_conf     = m_impl->ComputeConfThreshold(params);
+    ctx.channel_size_min = params.min_object_size;   // % of frame (or <0 unset)
+    ctx.channel_size_max = params.max_object_size;
+    ctx.frame_w = width;
+    ctx.frame_h = height;
 
     const int slot_idx = m_impl->AcquireSlotBlocking();
     if (slot_idx < 0) return 0;   // pool closed (shutdown)
@@ -687,9 +752,8 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
 
     std::vector<DetectionRect> raw;
     try {
-        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold,
-                         m_impl->ComputeMinObjectAreaFrac(params),
-                         m_impl->ComputeMaxObjectAreaFrac(params));
+        // Size band OFF at extraction (0,0) — applied per ROI in ApplyRoiFilter.
+        m_impl->PreFrame(slot, yuv420_frame, width, height, extract_conf, 0.0f, 0.0f);
         m_impl->GpuFrame(slot);
         m_impl->PostFrame(slot, raw);
     } catch (const Ort::Exception& e) {
@@ -703,9 +767,9 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
     }
     m_impl->ReleaseSlot(slot_idx);
 
-    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, detected_roi_indices);
+    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, original_roi_points, detected_roi_indices);
 
-    if (gai::kEnableTimingLog) {
+    if (gai::VerboseLogging()) {
         if (!ctx.last_detections.empty()) {
             std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
                       << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
@@ -717,6 +781,7 @@ int PersonDetector::Detect(PersonDetectorContext& ctx,
 
 int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
                                   const unsigned char* yuv420_frame, int width, int height,
+                                  const ROIRect* roi_rects, int roi_count,
                                   const gai::DetectorParams& params) {
     // Mirrors Detect's preamble: validate inputs, honour stride decimation.
     // Returns negative codes for shortcuts so the caller (PreLoop) can route
@@ -729,17 +794,22 @@ int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
     if (++ctx.stride_counter < m_impl->stride_n) return -1;
     ctx.stride_counter = 0;
 
-    const float conf_threshold = m_impl->ComputeConfThreshold(params);
-    // Stored on the prepare side so Phase3Post (no params) can filter by class.
-    ctx.class_mask = params.class_mask;
+    // Permissive extraction (see Detect): min confidence across ROIs, size band OFF.
+    // Channel fallbacks stored so Phase3Post/ApplyRoiFilter (no params) can resolve
+    // per-ROI values that inherit the channel.
+    const float extract_conf = m_impl->MinEffectiveConf(roi_rects, roi_count, params);
+    ctx.class_mask       = params.class_mask;
+    ctx.channel_conf     = m_impl->ComputeConfThreshold(params);
+    ctx.channel_size_min = params.min_object_size;
+    ctx.channel_size_max = params.max_object_size;
+    ctx.frame_w = width;
+    ctx.frame_h = height;
     const int slot_idx = m_impl->AcquireSlotBlocking();
     if (slot_idx < 0) return -2;   // pool closed mid-acquire (shutdown)
 
     auto& slot = m_impl->in_flights[slot_idx];
     try {
-        m_impl->PreFrame(slot, yuv420_frame, width, height, conf_threshold,
-                         m_impl->ComputeMinObjectAreaFrac(params),
-                         m_impl->ComputeMaxObjectAreaFrac(params));
+        m_impl->PreFrame(slot, yuv420_frame, width, height, extract_conf, 0.0f, 0.0f);
     } catch (const std::exception& e) {
         std::cerr << "[AI] Preprocess failed: " << e.what() << std::endl;
         m_impl->ReleaseSlot(slot_idx);
@@ -768,6 +838,7 @@ void PersonDetector::Phase2Gpu(int detector_slot) {
 
 int PersonDetector::Phase3Post(PersonDetectorContext& ctx, int detector_slot,
                                const ROIRect* roi_rects, int roi_count,
+                               const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                                std::vector<int>& detected_roi_indices) {
     if (detector_slot < 0 || detector_slot >= PersonDetector::Impl::kPoolSize) return 0;
     auto& slot = m_impl->in_flights[detector_slot];
@@ -782,9 +853,9 @@ int PersonDetector::Phase3Post(PersonDetectorContext& ctx, int detector_slot,
     }
     m_impl->ReleaseSlot(detector_slot);
 
-    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, detected_roi_indices);
+    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, original_roi_points, detected_roi_indices);
 
-    if (gai::kEnableTimingLog) {
+    if (gai::VerboseLogging()) {
         if (!ctx.last_detections.empty()) {
             std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
                       << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;

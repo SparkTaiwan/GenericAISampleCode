@@ -21,10 +21,11 @@ namespace GenericAI.App
     // Logging failures are swallowed: they must never crash the caller.
     internal static class FileLogger
     {
-        // Manual switch for INFO/WARN/ERROR file logging: edit -> rebuild.
-        // Timing(...) is gated by TimingRecorder.Enabled instead, so timing
-        // capture works without turning the general log on.
-        public const bool Enabled = false;
+        // Runtime switch for INFO/WARN/ERROR file logging, set once at startup from
+        // the "GenericAI.Config" log_to_file flag (ConsoleLog.LoadFromConfig) -- no
+        // rebuild needed. Off by default. Timing(...) is gated by TimingRecorder.Enabled
+        // instead, so timing capture works without turning the general log on.
+        public static volatile bool Enabled = false;
 
         private const long MaxFileBytes = 5 * 1024 * 1024;
         private const int  MaxBackupFiles = 3;
@@ -100,7 +101,6 @@ namespace GenericAI.App
             try { if (writer != null) writer.Join(TimeSpan.FromSeconds(2)); } catch { }
         }
 
-#pragma warning disable 162  // CS0162: Enabled is a compile-time const, one branch is always unreachable
         private static void Write(string level, string message, Exception ex)
         {
             if (!Enabled) return;
@@ -117,7 +117,6 @@ namespace GenericAI.App
                 // Logging must never propagate.
             }
         }
-#pragma warning restore 162
 
         private static void Enqueue(Entry e)
         {

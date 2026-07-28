@@ -22,6 +22,13 @@ namespace {
 std::mutex g_lifecycle_mtx;
 std::unique_ptr<gai::SharedDetectorScheduler> g_scheduler;
 
+// Detector kind actually chosen at init (after the detector_kind<0 fallback to
+// gai::kDetectorKind is resolved), exposed to the C# host via GAI_GetDetectorKind
+// so it can serve the matching /GetSettingsSchema without duplicating the
+// compile-time default. -1 while uninitialized / after Deinit. Guarded by
+// g_lifecycle_mtx (same lock as g_scheduler).
+int g_active_kind = -1;
+
 #ifdef USE_ZMQ
 // ZMQ frame plane (optional). When started, frames arrive over ZMQ (NAL -> decode
 // -> ChannelPipeline::SubmitDecodedFrame) instead of MMF.
@@ -124,6 +131,7 @@ __declspec(dllexport) int __cdecl GAI_InitializeChannels(const int* ports, int c
                      new gai::SharedDetectorScheduler());
         if (!s->Start(std::move(det), std::move(chans))) return 4;
         g_scheduler = std::move(s);
+        g_active_kind = static_cast<int>(kind);
         return 0;
     } catch (...) {
         // C ABI must not let C++ exceptions escape. Half-built channels /
@@ -219,6 +227,7 @@ __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
     {
         std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
         s = std::move(g_scheduler);
+        g_active_kind = -1;
     }
     if (s) {
         try { s->Stop(); } catch (...) {}
@@ -233,6 +242,14 @@ __declspec(dllexport) int __cdecl GAI_Deinitialize(void) {
 // (the host must do this before freeing its delegate).
 __declspec(dllexport) void __cdecl GAI_RegisterLogCallback(GAI_LogCallback cb) {
     gai::SetHostLogCallback(cb);
+}
+
+// Runtime verbose switch. The host mirrors its GenericAI.Config show_debug flag
+// here so event-driven native console lines (e.g. "[MotionDetector] ...") are
+// suppressed unless debug output is on -- toggled without a rebuild. Lifecycle-
+// independent (like GAI_RegisterLogCallback); call once at startup.
+__declspec(dllexport) void __cdecl GAI_SetVerbose(int enabled) {
+    gai::SetVerboseLogging(enabled != 0);
 }
 
 // Writes "CPU" / "DirectML(0)" / "" into buf (null-terminated, ANSI). Returns
@@ -277,6 +294,16 @@ __declspec(dllexport) int __cdecl GAI_GetBackend(char* buf, int buf_len) {
         buf[0] = '\0';
         return 0;
     }
+}
+
+// Detector kind resolved at init: 0 = Motion, 1 = Person. Returns -1 while
+// uninitialized (or after Deinit). Call after GAI_InitializeChannels so the
+// C# host serves /GetSettingsSchema for the detector that actually loaded,
+// including the detector_kind<0 fallback to gai::kDetectorKind — the single
+// source of truth is gai_config.h, no duplicated default on the C# side.
+__declspec(dllexport) int __cdecl GAI_GetDetectorKind(void) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    return g_active_kind;
 }
 
 }

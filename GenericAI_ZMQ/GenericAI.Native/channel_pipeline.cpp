@@ -114,7 +114,7 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
         " (" + std::to_string(kPoolSlots) + " slots x " + std::to_string(cap) +
         " bytes = " + std::to_string(kPoolSlots * cap) + " bytes)";
     HostLog(HostLogLevel::Info, msg);
-    if (kEnableTimingLog) {
+    if (VerboseLogging()) {
         std::cout << msg << std::endl;
     }
 }
@@ -122,12 +122,14 @@ void ChannelPipeline::ApplyParameters(const GAI_Settings& s) {
 void ChannelPipeline::ApplyAiSettings(float confidence, int class_mask, int sensitivity, int threshold,
                                      float min_object_size, float max_object_size) {
     params_.ApplyAiSettings(confidence, class_mask, sensitivity, threshold, min_object_size, max_object_size);
-    std::cout << "[channel " << port_ << "] ai_settings: confidence="
-              << confidence << " class_mask=0x" << std::hex << class_mask
-              << std::dec << " sensitivity=" << sensitivity
-              << " threshold=" << threshold
-              << " min_object_size=" << min_object_size
-              << " max_object_size=" << max_object_size << std::endl;
+    if (VerboseLogging()) {
+        std::cout << "[channel " << port_ << "] ai_settings: confidence="
+                  << confidence << " class_mask=0x" << std::hex << class_mask
+                  << std::dec << " sensitivity=" << sensitivity
+                  << " threshold=" << threshold
+                  << " min_object_size=" << min_object_size
+                  << " max_object_size=" << max_object_size << std::endl;
+    }
 }
 
 void ChannelPipeline::SetCallback(GAI_DetectionCallback cb) {

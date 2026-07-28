@@ -76,9 +76,13 @@ namespace GenericAI.App
             string detectorLabel = parsed.DetectorKind < 0
                 ? "<compile-time default>"
                 : ((DetectorType)parsed.DetectorKind).ToString();
-            // /GetSettingsSchema serves the schema for this detector (motion vs object
-            // detection). -1 (compile-time default) falls back to object detection.
-            SettingsSchema.Configure(parsed.DetectorKind);
+            // Provisional schema selection. When detector= is passed explicitly the
+            // kind is already known, so /GetSettingsSchema is correct immediately.
+            // When it is unset (-1) the compile-time default lives natively
+            // (gai_config.h); we re-Configure with the authoritative kind from
+            // GAI_GetDetectorKind right after a successful init below, so the schema
+            // always matches the detector that actually loaded.
+            if (parsed.DetectorKind >= 0) SettingsSchema.Configure(parsed.DetectorKind);
             FileLogger.Info($"GenericAI starting (basePort={parsed.Port}, channels={n}, mode={parsed.Mode}, detector={detectorLabel}, encode={parsed.EncodeWorkers}, send={parsed.SendWorkers})");
             if (parsed.PortFromArgs)
             {
@@ -135,6 +139,12 @@ namespace GenericAI.App
                 ConsoleLog.WriteLine("Loading native library (GenericAI.Native.dll + deps) ...");
                 NativeInterop.GAI_RegisterLogCallback(_nativeLogDelegate);
 
+                // Turn native informational logging on when GenericAI.Config has
+                // show_native_debug = 1. Independent of show_debug (C# console); gates
+                // the native [AI]/[PersonDetector]/[MotionDetector]/[channel]/[zmq]
+                // lines. std::cerr errors on the native side always print regardless.
+                NativeInterop.GAI_SetVerbose(ConsoleLog.NativeDebug ? 1 : 0);
+
                 // Set BEFORE the call so a SIGINT in any post-call window still
                 // routes through GAI_Deinitialize. C++ side guards null scheduler
                 // (exports.cpp lock_guard + null check), so an extra Deinit on
@@ -174,6 +184,19 @@ namespace GenericAI.App
                 }
                 else
                 {
+                    // Authoritative detector kind: whatever native actually loaded,
+                    // resolving the detector_kind<0 fallback to gai::kDetectorKind
+                    // (gai_config.h) — the single source of truth. This makes
+                    // /GetSettingsSchema and the channel-seed below serve the matching
+                    // schema (motion vs object detection) even when detector= was unset.
+                    int activeKind = NativeInterop.GAI_GetDetectorKind();
+                    if (activeKind >= 0)
+                    {
+                        SettingsSchema.Configure(activeKind);
+                        detectorLabel = ((DetectorType)activeKind).ToString();
+                        FileLogger.Info($"active detector = {detectorLabel} (kind={activeKind})");
+                    }
+
                     System.Text.StringBuilder backendBuf = new System.Text.StringBuilder(64);
                     NativeInterop.GAI_GetBackend(backendBuf, backendBuf.Capacity);
                     string backend = backendBuf.ToString();

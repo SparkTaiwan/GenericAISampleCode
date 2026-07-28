@@ -29,7 +29,8 @@ public:
         if (!ctx) return 0;
         std::vector<int> indices;
         auto* mctx = static_cast<MotionDetectorContext*>(ctx);
-        int n = inner_.Detect(*mctx, yuv, width, height, roi_rects, roi_count, indices, params);
+        int n = inner_.Detect(*mctx, yuv, width, height, roi_rects, roi_count,
+                              original_roi_points, indices, params);
         if (n <= 0) return n;
 
         out.flattened_points.clear();
@@ -66,11 +67,11 @@ public:
                const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                const DetectorParams& params,
                DetectionResult& out) override {
-        (void)original_roi_points;
         if (!ctx) return 0;
         std::vector<int> indices;
         auto* pctx = static_cast<PersonDetectorContext*>(ctx);
-        int n = inner_.Detect(*pctx, yuv, width, height, roi_rects, roi_count, indices, params);
+        int n = inner_.Detect(*pctx, yuv, width, height, roi_rects, roi_count,
+                              original_roi_points, indices, params);
         if (n <= 0) return n;
         FlattenBoxesToQuads(pctx->last_detections, out);
         for (int i = 0; i < kNumSupportedClasses; ++i) out.class_counts[i] = pctx->last_class_counts[i];
@@ -84,12 +85,12 @@ public:
 
     int Phase1Prepare(DetectorContext* ctx,
                       const unsigned char* yuv, int width, int height,
-                      const ROIRect* /*roi_rects*/, int /*roi_count*/,
+                      const ROIRect* roi_rects, int roi_count,
                       const std::vector<std::vector<GAI_Roi>>& /*original_roi_points*/,
                       const DetectorParams& params) override {
         if (!ctx) return -1;
         auto* pctx = static_cast<PersonDetectorContext*>(ctx);
-        return inner_.Phase1Prepare(*pctx, yuv, width, height, params);
+        return inner_.Phase1Prepare(*pctx, yuv, width, height, roi_rects, roi_count, params);
     }
 
     void Phase2Gpu(DetectorContext* ctx, int detector_slot) override {
@@ -99,13 +100,14 @@ public:
 
     int Phase3Post(DetectorContext* ctx, int detector_slot,
                    const ROIRect* roi_rects, int roi_count,
-                   const std::vector<std::vector<GAI_Roi>>& /*original_roi_points*/,
+                   const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                    const DetectorParams& /*params*/,
                    DetectionResult& out) override {
         if (!ctx) return 0;
         std::vector<int> indices;
         auto* pctx = static_cast<PersonDetectorContext*>(ctx);
-        int n = inner_.Phase3Post(*pctx, detector_slot, roi_rects, roi_count, indices);
+        int n = inner_.Phase3Post(*pctx, detector_slot, roi_rects, roi_count,
+                                  original_roi_points, indices);
         if (n <= 0) return n;
         FlattenBoxesToQuads(pctx->last_detections, out);
         for (int i = 0; i < kNumSupportedClasses; ++i) out.class_counts[i] = pctx->last_class_counts[i];

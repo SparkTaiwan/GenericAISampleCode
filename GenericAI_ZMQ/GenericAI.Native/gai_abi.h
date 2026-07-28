@@ -17,6 +17,15 @@ struct GAI_Settings {
     int  sensitivity[10];
     int  threshold[10];
     GAI_Roi rois[10][10];
+    // Per-ROI object-detection tuning (schema scope=roi). Index aligns with the
+    // rois[] groups above. -1 = unset -> the detector inherits the channel-wide
+    // ai_settings value (GAI_SetChannelAiSettings), so a caller that fills only the
+    // legacy fields keeps today's behaviour. object_size_* are % of frame (0..100).
+    // Appended at the END so the leading layout stays byte-compatible.
+    float confidence[10];
+    int   class_mask[10];
+    float object_size_min[10];
+    float object_size_max[10];
 };
 #pragma pack(pop)
 

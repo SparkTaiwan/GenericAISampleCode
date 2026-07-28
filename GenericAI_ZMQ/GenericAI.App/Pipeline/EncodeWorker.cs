@@ -69,6 +69,18 @@ namespace GenericAI.App
                                 int quality = channel.Parameters.JpgQuality;
                                 if (quality <= 0) quality = 30;
 
+                                // draw_roi (from the perimeter's draw_rect_on_jpg flag): overlay the
+                                // detected ROI/box outlines onto the keyframe's Y plane BEFORE JPEG
+                                // encode. RoisFlat is in frame coordinates (RoisCount groups x
+                                // NodeCount points). Drawing on buf is safe — detection already
+                                // consumed this frame; the buffer is returned to the pool after encode.
+                                if (channel.Parameters.DrawRoi && raw.RoisFlat != null
+                                    && raw.RoisCount > 0 && raw.NodeCount > 1)
+                                {
+                                    DrawRoisOnI420(buf, raw.Width, raw.Height,
+                                                   raw.RoisFlat, raw.RoisCount, raw.NodeCount);
+                                }
+
                                 // fixed is cheaper than GCHandle.Alloc(Pinned) —
                                 // no handle-table round trip per frame; the buffer
                                 // only needs to stay pinned for the native call.
@@ -167,6 +179,83 @@ namespace GenericAI.App
                     TurboJpegInterop.ReleaseThreadHandle();
                 }
             }, ct);
+        }
+
+        // ---- draw_roi keyframe overlay -------------------------------------------
+        // Draws each ROI group's outline (closed polygon) onto the I420 frame as a 2px
+        // RED line. Red in BT.601 is Y=76, U=85, V=255, so the Y plane and both chroma
+        // planes are written. Points are in frame coordinates; groups are laid out as
+        // RoisCount blocks of NodeCount points (person = 4-corner quads, motion =
+        // polygon vertices).
+        private const byte kRoiY = 76;    // red luma
+        private const byte kRoiU = 85;    // red Cb
+        private const byte kRoiV = 255;   // red Cr
+
+        private static void DrawRoisOnI420(byte[] frame, int width, int height,
+                                           NativeInterop.ROI[] rois, int roisCount, int nodeCount)
+        {
+            if (frame == null || rois == null || width <= 0 || height <= 0) return;
+            long need = (long)roisCount * nodeCount;
+            if (need <= 0 || rois.Length < need) return;
+            // I420 layout: Y (w*h), then U (cw*ch), then V (cw*ch).
+            int ySize = width * height;
+            int cw = width / 2, ch = height / 2;
+            int uOff = ySize, vOff = ySize + cw * ch;
+            if (frame.Length < (long)ySize + 2L * cw * ch) return;   // not a full I420 buffer
+
+            for (int r = 0; r < roisCount; r++)
+            {
+                int baseIdx = r * nodeCount;
+                for (int n = 0; n < nodeCount; n++)
+                {
+                    NativeInterop.ROI p0 = rois[baseIdx + n];
+                    NativeInterop.ROI p1 = rois[baseIdx + (n + 1) % nodeCount];   // close the polygon
+                    DrawLine(frame, width, height, cw, ch, uOff, vOff, p0.x, p0.y, p1.x, p1.y);
+                }
+            }
+        }
+
+        // Bresenham line, 2px thick, red.
+        private static void DrawLine(byte[] frame, int width, int height, int cw, int ch, int uOff, int vOff,
+                                     int x0, int y0, int x1, int y1)
+        {
+            int dx = Math.Abs(x1 - x0), dy = Math.Abs(y1 - y0);
+            int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+            int err = dx - dy;
+            // Bound the iteration count so a stray (large/negative) coordinate can't spin.
+            int guard = dx + dy + 4;
+            while (guard-- > 0)
+            {
+                PlotRed(frame, width, height, cw, ch, uOff, vOff, x0, y0);
+                if (x0 == x1 && y0 == y1) break;
+                int e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; x0 += sx; }
+                if (e2 < dx) { err += dx; y0 += sy; }
+            }
+        }
+
+        private static void PlotRed(byte[] frame, int width, int height, int cw, int ch, int uOff, int vOff,
+                                    int x, int y)
+        {
+            for (int oy = 0; oy <= 1; oy++)
+            {
+                int yy = y + oy;
+                if (yy < 0 || yy >= height) continue;
+                int rowBase = yy * width;
+                for (int ox = 0; ox <= 1; ox++)
+                {
+                    int xx = x + ox;
+                    if (xx < 0 || xx >= width) continue;
+                    frame[rowBase + xx] = kRoiY;                       // Y
+                    int cx = xx >> 1, cy = yy >> 1;                    // 4:2:0 subsampling
+                    if (cx < cw && cy < ch)
+                    {
+                        int cIdx = cy * cw + cx;
+                        frame[uOff + cIdx] = kRoiU;                    // U
+                        frame[vOff + cIdx] = kRoiV;                    // V
+                    }
+                }
+            }
         }
     }
 }

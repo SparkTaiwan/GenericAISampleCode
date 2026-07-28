@@ -35,6 +35,22 @@ namespace GenericAI.App
 
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 100)]
             public ROI[] rois;
+
+            // Per-ROI object-detection tuning (schema scope=roi), index-aligned with
+            // the ROI groups. MUST mirror GAI_Settings (gai_abi.h) field order and
+            // sizes exactly. -1 = unset -> native inherits the channel ai_settings.
+            // object_size_* are % of frame area (0..100).
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+            public float[] confidence;
+
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+            public int[] class_mask;
+
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+            public float[] object_size_min;
+
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+            public float[] object_size_max;
         }
 
         // Supported detection classes, FIXED order — mirrors
@@ -83,11 +99,24 @@ namespace GenericAI.App
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GAI_RegisterLogCallback(LogCallbackFunction cb);
 
+        // Mirror the host's show_debug (GenericAI.Config) into native so event-driven
+        // native console lines (e.g. "[MotionDetector] ...") honor the same runtime
+        // debug switch. Call once at startup, before GAI_InitializeChannels.
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void GAI_SetVerbose(int enabled);
+
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GAI_Deinitialize();
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern int GAI_GetBackend(System.Text.StringBuilder buf, int bufLen);
+
+        // Detector kind actually resolved at init: 0 = Motion, 1 = Person; -1 when
+        // uninitialized. Call after GAI_InitializeChannels to serve the schema for
+        // the detector that really loaded — this resolves the detectorKind<0
+        // fallback natively (gai_config.h), so the default lives in one place.
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int GAI_GetDetectorKind();
 
         // Last init error (e.g. model load failure). Returns 0 when healthy. Used
         // after a degraded init (GAI_InitializeChannels == 5) to report on /Alive.

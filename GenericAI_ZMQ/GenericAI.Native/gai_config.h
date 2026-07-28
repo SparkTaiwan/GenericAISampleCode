@@ -27,13 +27,17 @@ constexpr const char* kDefaultModelPath = "models/yolo.onnx";
 // %ProgramData%\Spark\GenericAI\Logs\GenericAI-<port>.log.
 constexpr bool kPreferGpu = true;
 
-// === Per-frame timing log / verbose console ===
-//  - true  -> TimingRecorder prints one [TIMING] line per frame to the
-//             console, and the native informational lines ([AI] ...,
-//             [PersonDetector] ..., [channel N] ...) are printed too.
-//  - false -> all TimingRecorder Mark/Flush call sites compile away and the
-//             informational lines are suppressed, so the console carries only
-//             the lines the CSharp sample prints (plus std::cerr errors).
+// === Per-frame timing log ===
+//  - true  -> TimingRecorder prints one [TIMING] line per frame to the console
+//             and writes timing-<port>.log.
+//  - false -> all TimingRecorder Mark/Flush call sites compile away (zero
+//             per-frame overhead).
+// This gate is ONLY the high-frequency per-frame timing instrumentation. The
+// informational native console lines ([AI] .../[PersonDetector] .../[channel N]
+// .../[MotionDetector] .../[zmq] ...) are NOT controlled here -- they are gated
+// at RUNTIME by gai::VerboseLogging() (host_log.h), driven by the host's
+// GenericAI.Config show_native_debug flag (GAI_SetVerbose), so they toggle
+// without a rebuild. std::cerr error lines always print.
 // Matching switch on the C# side: TimingRecorder.Enabled in TimingRecorder.cs
 // (that one also writes timing-<port>.log via FileLogger).
 constexpr bool kEnableTimingLog = false;

@@ -48,8 +48,11 @@ private:
     // rebuilds). -1 = unset.
     float ai_confidence_  = -1.0f;
     int   ai_class_mask_  = -1;
-    int   ai_sensitivity_ = -1;   // motion: overrides per-ROI sensitivity when >= 0
-    int   ai_threshold_   = -1;   // motion: overrides per-ROI threshold when >= 0
+    // Motion sensitivity/threshold are per-ROI (schema scope=roi) and ride on each
+    // ROIRect; these channel-wide fields are no longer consumed by Take() (kept for
+    // the GAI_SetChannelAiSettings ABI, which still accepts the two slots).
+    int   ai_sensitivity_ = -1;
+    int   ai_threshold_   = -1;
     float ai_min_object_size_ = -1.0f;   // object detection: min box area as % of frame (0..100)
     float ai_max_object_size_ = -1.0f;   // object detection: max box area as % of frame (0..100)
 };

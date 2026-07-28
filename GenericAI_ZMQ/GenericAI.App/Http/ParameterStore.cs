@@ -21,15 +21,22 @@ namespace GenericAI.App
         // object detection) default to 1, so 1 is the correct startup value. (jpg above does the same:
         // _jpgQuality = 30 mirrors JpgCompressField @default = 30.)
         private volatile int _triggerIntervalSec = 1;
+        // draw_roi (schema scope=channel): whether to draw the ROI outlines onto the
+        // returned keyframe. Initial value mirrors the schema default (true), same
+        // reasoning as _triggerIntervalSec above — the schema default is a UI hint and
+        // is not pushed here on its own, so a first SetParameters that omits it must
+        // still behave like the advertised default.
+        private volatile bool _drawRoi = true;
 
         public string Url               => _url;
         public int    JpgQuality        => _jpgQuality;
         public int    TriggerIntervalSec => _triggerIntervalSec;
+        public bool   DrawRoi           => _drawRoi;
 
-        // triggerIntervalSec: null keeps the previous value (field absent from this SetParameters);
-        // a value (0..3600) replaces it. 0 is meaningful (disable throttle), so it can't use the
-        // ">0 keeps previous" trick jpg_compress uses.
-        public void Update(string url, int jpgCompress, int? triggerIntervalSec = null)
+        // triggerIntervalSec / drawRoi: null keeps the previous value (field absent from this
+        // SetParameters); a value replaces it. 0 (throttle) / false (draw) are meaningful, so
+        // they can't use the ">0 keeps previous" trick jpg_compress uses.
+        public void Update(string url, int jpgCompress, int? triggerIntervalSec = null, bool? drawRoi = null)
         {
             lock (_lock)
             {
@@ -44,6 +51,7 @@ namespace GenericAI.App
                     if (v > 3600) v = 3600;
                     _triggerIntervalSec = v;
                 }
+                if (drawRoi.HasValue) _drawRoi = drawRoi.Value;
             }
         }
     }

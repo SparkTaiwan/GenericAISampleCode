@@ -29,6 +29,7 @@ public:
     int Detect(MotionDetectorContext& ctx,
                const unsigned char* yuv420_frame, int width, int height,
                const ROIRect* roi_rects, int roi_count,
+               const std::vector<std::vector<GAI_Roi>>& original_roi_points,
                std::vector<int>& detected_roi_indices,
                const gai::DetectorParams& params);
 };

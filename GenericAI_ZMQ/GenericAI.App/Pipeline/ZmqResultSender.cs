@@ -31,14 +31,17 @@ namespace GenericAI.App
         [DllImport(ZMQ, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)] private static extern int zmq_connect(IntPtr s, string addr);
         [DllImport(ZMQ, CallingConvention = CallingConvention.Cdecl)] private static extern int zmq_setsockopt(IntPtr s, int opt, ref int val, UIntPtr len);
         [DllImport(ZMQ, CallingConvention = CallingConvention.Cdecl)] private static extern int zmq_send(IntPtr s, byte[] buf, UIntPtr len, int flags);
+        [DllImport(ZMQ, CallingConvention = CallingConvention.Cdecl)] private static extern int zmq_errno();
 
         private readonly object _lock = new object();
+        private readonly string _endpoint;
         private IntPtr _ctx;
         private IntPtr _sock;
         private bool _disposed;
 
         public ZmqResultSender(string endpoint, int channelCount = 1)
         {
+            _endpoint = endpoint;
             _ctx = zmq_ctx_new();
             _sock = zmq_socket(_ctx, ZMQ_PUSH);
             // HWM scales with the shard size (all channels share this PUSH); the
@@ -58,8 +61,28 @@ namespace GenericAI.App
         {
             lock (_lock)
             {
-                if (_disposed || _sock == IntPtr.Zero) return false;
+                if (_disposed || _sock == IntPtr.Zero)
+                {
+                    ConsoleLog.WriteLine($"[ZMQ result] skipped: sender not ready (disposed={_disposed}) -> {_endpoint}");
+                    return false;
+                }
                 int r = zmq_send(_sock, payload, (UIntPtr)(uint)payload.Length, 0);
+                // Debug-gated (GenericAI.Config show_debug=1): confirm the actual
+                // zmq_send at the transmit point. rc>=0 => bytes queued to a connected
+                // PULL peer (the recorder's result bind); rc<0 => no consumer within
+                // SNDTIMEO (errno EAGAIN=11) so nothing was sent -> SendWorker parks it.
+                if (r >= 0)
+                {
+                    string msg = $"[ZMQ result] zmq_send OK: rc={r} bytes={payload.Length} -> {_endpoint}";
+                    ConsoleLog.WriteLine(msg);   // console (show_debug)
+                    FileLogger.Info(msg);        // file (log_to_file)
+                }
+                else
+                {
+                    string msg = $"[ZMQ result] zmq_send FAILED: rc={r} errno={zmq_errno()} bytes={payload.Length} -> {_endpoint} (no consumer within SNDTIMEO?)";
+                    ConsoleLog.WriteLine(msg);
+                    FileLogger.Warn(msg);
+                }
                 return r >= 0;
             }
         }

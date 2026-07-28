@@ -25,13 +25,23 @@ void ParamSnapshot::Apply(const GAI_Settings& s) {
             r.y1 = pts[0].y;
             r.x2 = pts[2].x;
             r.y2 = pts[2].y;
+            // Per-ROI tuning (schema scope=roi): the sensitivity/threshold travel
+            // ON the rect, aligned by construction with the index the detector sees.
+            // Motion reads roi.sensitivity/roi.threshold per ROI; no channel-wide
+            // collapse. s.sensitivity[i]/s.threshold[i] come from rois[i] on the wire.
+            r.sensitivity = s.sensitivity[i];
+            r.threshold   = s.threshold[i];
+            // Per-ROI object-detection tuning (schema scope=roi). -1 = unset ->
+            // ApplyRoiFilter inherits the channel ai_settings value.
+            r.confidence      = s.confidence[i];
+            r.class_mask      = s.class_mask[i];
+            r.object_size_min = s.object_size_min[i];
+            r.object_size_max = s.object_size_max[i];
             rects.push_back(r);
             polygons.push_back(std::move(pts));
 
-            // Only ROI slots that contributed a valid polygon to roi_rects are
-            // allowed to source the (threshold, sensitivity) — otherwise we may
-            // pick up tuning from an i whose ROI was dropped, mis-aligning the
-            // params with the rects index the detector actually sees.
+            // Keep the first valid ROI's tuning as latest_params_ fallback only
+            // (whole-frame path / legacy callers). It is NOT the per-ROI source.
             if (!have_first) {
                 params.threshold   = s.threshold[i];
                 params.sensitivity = s.sensitivity[i];
@@ -77,9 +87,10 @@ ParamSnapshot::View ParamSnapshot::Take() const {
     v.params.class_mask = ai_class_mask_;
     v.params.min_object_size = ai_min_object_size_;   // object detection size band (min)
     v.params.max_object_size = ai_max_object_size_;   // object detection size band (max)
-    // Motion: ai_settings sensitivity/threshold override the per-ROI values when set.
-    if (ai_sensitivity_ >= 0) v.params.sensitivity = ai_sensitivity_;
-    if (ai_threshold_   >= 0) v.params.threshold   = ai_threshold_;
+    // Motion sensitivity/threshold are per-ROI now (schema scope=roi): they ride on
+    // each ROIRect (set in Apply), so there is NO channel-wide override here — that
+    // would flatten every region to one value. ai_sensitivity_/ai_threshold_ are
+    // left in place but unused by motion (kept for ABI compatibility).
     return v;
 }
 

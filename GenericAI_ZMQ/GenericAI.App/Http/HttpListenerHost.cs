@@ -229,10 +229,14 @@ namespace GenericAI.App
             string version = null;
             int? jpgFromSchema = null;
             int? triggerIntervalFromSchema = null;
+            bool? drawRoiFlag = null;
             try
             {
                 var root = Newtonsoft.Json.Linq.JObject.Parse(body);
                 version = (string)root["version"];
+                // draw_roi: top-level built-in flag (recorder sources it from the
+                // perimeter's draw_rect_on_jpg), NOT a schema ai_settings field.
+                drawRoiFlag = ExtractBool(root, "draw_roi");
                 var aiSettings = root["ai_settings"];
                 if (aiSettings != null)
                 {
@@ -272,7 +276,7 @@ namespace GenericAI.App
 
             try
             {
-                _params.Update(settings.analytics_event_api_url, settings.jpg_compress, triggerIntervalFromSchema);
+                _params.Update(settings.analytics_event_api_url, settings.jpg_compress, triggerIntervalFromSchema, drawRoiFlag);
                 NativeInterop.GAI_SetChannelParameters(_port, ref settings);
             }
             catch (Exception ex)
@@ -317,20 +321,24 @@ namespace GenericAI.App
         {
             float? conf = ExtractConfidence(aiSettings);
             int? classMask = ExtractClassMask(aiSettings);
-            int? sensitivity = ExtractInt(aiSettings, "sensitivity");
-            int? threshold = ExtractInt(aiSettings, "threshold");
+            // sensitivity/threshold are ROI-scoped (schema scope=roi): they flow
+            // per-ROI via GAI_SetChannelParameters (rois[i].sensitivity/threshold ->
+            // SettingParameters arrays -> ROIRect), NOT through this channel-wide call.
+            // Pushing them here would flatten every region to one value — the exact
+            // "all ROIs share one setting" bug. So they are never read from the flat
+            // ai_settings and always passed as -1 (unset) to the native ai_settings.
             // Object detection object-size band (% of frame area, 0..100). Absent -> pass <0
             // (that bound = no filter).
             float? objSizeMin = ExtractFloat(aiSettings, "object_size_min");
             float? objSizeMax = ExtractFloat(aiSettings, "object_size_max");
-            if (conf.HasValue || classMask.HasValue || sensitivity.HasValue || threshold.HasValue
+            if (conf.HasValue || classMask.HasValue
                 || objSizeMin.HasValue || objSizeMax.HasValue)
             {
                 NativeInterop.GAI_SetChannelAiSettings(port,
-                    conf ?? -1f, classMask ?? -1, sensitivity ?? -1, threshold ?? -1,
+                    conf ?? -1f, classMask ?? -1, -1, -1,
                     objSizeMin ?? -1f, objSizeMax ?? -1f);
                 ConsoleLog.WriteLine($"ai_settings applied: ch{port} confidence={(conf.HasValue ? conf.Value.ToString() : "-")}"
-                    + $" classMask=0x{(classMask ?? -1):X} sensitivity={(sensitivity?.ToString() ?? "-")} threshold={(threshold?.ToString() ?? "-")}"
+                    + $" classMask=0x{(classMask ?? -1):X} (sensitivity/threshold are per-ROI)"
                     + $" object_size_min={(objSizeMin?.ToString() ?? "-")} object_size_max={(objSizeMax?.ToString() ?? "-")}");
             }
         }
@@ -416,6 +424,33 @@ namespace GenericAI.App
             return null;
         }
 
+        // A scalar bool field by key. flat ({"draw_roi":true}) or schema-shaped
+        // ({"fields":[{"key":"draw_roi","value":true}]}). null if absent.
+        private static bool? ExtractBool(JToken aiSettings, string key)
+        {
+            try
+            {
+                JToken flat = aiSettings[key];
+                if (flat != null && flat.Type != JTokenType.Object && flat.Type != JTokenType.Array)
+                    return (bool)flat;
+
+                if (aiSettings["fields"] is JArray fields)
+                {
+                    foreach (JToken f in fields)
+                    {
+                        if ((string)f["key"] == key)
+                        {
+                            JToken v = f["value"] ?? f["default"];
+                            if (v != null && v.Type != JTokenType.Object && v.Type != JTokenType.Array)
+                                return (bool)v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         // classes string_array -> supported-class bitmask (NativeInterop.SupportedClasses
         // order). flat ({"classes":["person","car"]}) or schema-shaped
         // ({"fields":[{"key":"classes","value":[...]}]}). null if absent.
@@ -471,6 +506,13 @@ namespace GenericAI.App
                 sensitivity = new int[10],
                 threshold = new int[10],
                 rois = InitializeRoisArray(100),
+                // Per-ROI object-detection tuning. -1 = unset -> native inherits the
+                // channel ai_settings. Filled per ROI once the recorder sends
+                // rois[i].ai_settings (deferred wiring); until then all inherit.
+                confidence = NegOnesF(10),
+                class_mask = NegOnes(10),
+                object_size_min = NegOnesF(10),
+                object_size_max = NegOnesF(10),
             };
 
             roiGroups = 0;
@@ -484,6 +526,20 @@ namespace GenericAI.App
                     if (g.threshold   == null) throw new JsonException($"rois[{i}].threshold is required");
                     s.sensitivity[i] = g.sensitivity.Value;
                     s.threshold[i] = g.threshold.Value;
+
+                    // Per-ROI object-detection settings (schema scope=roi). Absent ->
+                    // the arrays keep their -1 default so native inherits the channel.
+                    if (g.ai_settings != null)
+                    {
+                        float? c    = ExtractConfidence(g.ai_settings);
+                        int?   cm   = ExtractClassMask(g.ai_settings);
+                        float? omin = ExtractFloat(g.ai_settings, "object_size_min");
+                        float? omax = ExtractFloat(g.ai_settings, "object_size_max");
+                        if (c.HasValue)    s.confidence[i]      = c.Value;
+                        if (cm.HasValue)   s.class_mask[i]      = cm.Value;
+                        if (omin.HasValue) s.object_size_min[i] = omin.Value;
+                        if (omax.HasValue) s.object_size_max[i] = omax.Value;
+                    }
 
                     if (g.rects != null)
                     {
@@ -511,6 +567,11 @@ namespace GenericAI.App
             return a;
         }
 
+        // Per-ROI object-detection arrays default to -1 (unset) so native inherits the
+        // channel ai_settings until the recorder starts sending rois[i].ai_settings.
+        private static float[] NegOnesF(int n) { var a = new float[n]; for (int i = 0; i < n; i++) a[i] = -1f; return a; }
+        private static int[]   NegOnes(int n)  { var a = new int[n];   for (int i = 0; i < n; i++) a[i] = -1;  return a; }
+
         // DTOs mirror the /SetParameters wire format (v1.2). Kept private to
         // the listener because they are not shared with the rest of the app —
         // ParseSettings copies the values into NativeInterop.SettingParameters /
@@ -537,6 +598,10 @@ namespace GenericAI.App
             public int? sensitivity { get; set; }
             public int? threshold { get; set; }
             public List<RoiDto> rects { get; set; }
+            // Per-ROI object-detection settings (schema scope=roi): confidence,
+            // classes, object_size_min/max. Same shape as the channel ai_settings;
+            // parsed with the shared Extract* helpers. Absent -> ROI inherits channel.
+            public Newtonsoft.Json.Linq.JObject ai_settings { get; set; }
         }
 
         private sealed class RoiDto
