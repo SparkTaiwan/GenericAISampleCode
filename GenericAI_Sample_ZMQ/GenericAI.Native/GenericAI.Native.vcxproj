@@ -160,14 +160,14 @@
   <ImportGroup Label="ExtensionTargets">
     <!-- libzmq + FFmpeg add their include/lib and COPY their runtime DLLs. Import them
          only when USE_ZMQ is in effect (Debug/Release), NOT in Release-NoZmq. -->
-    <Import Project="..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" />
+    <Import Project="..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" />
     <Import Project="..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets" Condition="Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets'))" />
+    <Error Condition="!Exists('..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets'))" />
     <Error Condition="!Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets'))" />
   </Target>
 </Project>

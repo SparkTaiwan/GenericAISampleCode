@@ -31,7 +31,7 @@ Third-party dependencies (restored via NuGet):
 | `System.Buffers` | 4.5.1 | App | Pooled buffers on the frame path. |
 | `Microsoft.ML.OnnxRuntime.DirectML` | 1.14.1 | Native | Person detector inference. |
 | `Microsoft.AI.DirectML` | 1.10.1 | Native | DirectML execution provider. |
-| `libzmq-vc143` | 4.2.0 | Native | ZMQ frame + result transport. |
+| `libzmq-vc143` | 4.3.5 | Native | ZMQ frame + result transport. |
 | `FFmpeg-lgpl3` | 4.4.1 | Native | H.264 / H.265 NAL decode (ZMQ frame plane). |
 | `libjpeg-turbo` (bundled at `native-deps/win-x64/turbojpeg.dll`) | — | App | Callback JPEG encoding. |
 
@@ -57,7 +57,7 @@ Everything a deployment needs is in `bin/Release/x64/` after a Release build:
 | `GenericAI.Native.dll` | Detector pipeline + ZMQ receiver + NAL decode (`GAI_*` C ABI). |
 | `onnxruntime.dll`, `DirectML.dll` | ONNX Runtime + DirectML EP for the Person detector. |
 | `turbojpeg.dll` + `turbojpeg.LICENSE.md` | Callback JPEG encoding (license must ship with the dll). |
-| `libzmq-v143-mt-4_2_0.dll`, `libsodium.dll` | ZMQ transport (frame + result planes). |
+| `libzmq-v143-mt-4_3_5.dll`, `libsodium.dll` | ZMQ transport (frame + result planes). |
 | `avcodec-58.dll`, `avformat-58.dll`, `avutil-56.dll`, `swscale-5.dll`, `swresample-3.dll`, `avfilter-7.dll`, `avdevice-58.dll`, `postproc-55.dll` | FFmpeg — H.264/H.265 decode of ZMQ frames. |
 | `Newtonsoft.Json.dll`, `System.Buffers.dll` | Managed dependencies. |
 | `models\` (`yolox_m_fp16.onnx` + `LICENSE.md`) | Person detector model (Apache 2.0 text must ship with it). |

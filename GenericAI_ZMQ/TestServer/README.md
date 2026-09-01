@@ -14,7 +14,7 @@ AIServiceModule side so you can exercise the ZMQ + NAL path without ARGO.
    SPS/PPS are cached and prepended to keyframes so a mid-stream join still decodes.
 4. Best-effort HTTP listener for `PostAnalyticsResult` -> prints `[RESULT] channel=.. timestamp=..`.
 
-No NuGet: ZMQ is P/Invoked into the wrapper's libzmq (`libzmq-v143-mt-4_2_0.dll`).
+No NuGet: ZMQ is P/Invoked into the wrapper's libzmq (`libzmq-v143-mt-4_3_5.dll`).
 RTSP mode needs **ffmpeg.exe** on PATH (or pass `ffmpeg=<path>`).
 
 ## Build / run

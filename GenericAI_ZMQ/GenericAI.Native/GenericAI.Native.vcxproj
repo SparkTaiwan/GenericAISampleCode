@@ -191,7 +191,7 @@
     <!-- libzmq + FFmpeg add their include/lib and COPY their runtime DLLs. Import them
          only when USE_ZMQ is in effect (Debug/Release), NOT in Release-NoZmq, so the
          no-ZMQ output carries no ffmpeg/libzmq DLLs. -->
-    <Import Project="..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" />
+    <Import Project="..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets" Condition="Exists('..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" />
     <Import Project="..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets" Condition="Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
@@ -200,7 +200,7 @@
     </PropertyGroup>
     <Error Condition="!Exists('..\packages\Microsoft.ML.OnnxRuntime.DirectML.1.14.1\build\native\Microsoft.ML.OnnxRuntime.DirectML.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.ML.OnnxRuntime.DirectML.1.14.1\build\native\Microsoft.ML.OnnxRuntime.DirectML.targets'))" />
     <Error Condition="!Exists('..\packages\Microsoft.AI.DirectML.1.10.1\build\Microsoft.AI.DirectML.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.AI.DirectML.1.10.1\build\Microsoft.AI.DirectML.targets'))" />
-    <Error Condition="!Exists('..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.2.0\build\native\libzmq-vc143.targets'))" />
+    <Error Condition="!Exists('..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\libzmq-vc143.4.3.5\build\native\libzmq-vc143.targets'))" />
     <Error Condition="!Exists('..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets') and '$(Configuration)' != 'Release-NoZmq'" Text="$([System.String]::Format('$(ErrorText)', '..\packages\FFmpeg-lgpl3.4.4.1\build\native\FFmpeg-lgpl3.targets'))" />
   </Target>
 </Project>

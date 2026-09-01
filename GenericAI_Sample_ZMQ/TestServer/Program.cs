@@ -23,7 +23,7 @@ namespace GenericAI.TestServer
     internal static class Program
     {
         // ---- libzmq P/Invoke (C API) -----------------------------------------
-        private const string ZMQ = "libzmq-v143-mt-4_2_0.dll";  // match the wrapper's libzmq
+        private const string ZMQ = "libzmq-v143-mt-4_3_5.dll";  // match the wrapper's libzmq
         private const int ZMQ_PUSH = 8;
         private const int ZMQ_PULL = 7;
         private const int ZMQ_SNDMORE = 2;

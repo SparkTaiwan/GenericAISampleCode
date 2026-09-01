@@ -21,3 +21,10 @@ packages/
 
 # Local-only test harness
 RecorderSimulator/
+
+# Large ONNX model weights (downloaded via tools/*/download_model.py, not committed)
+tools/vlm_poc/models/
+GenericAI_*/native-deps/models/phi35v*/
+*.onnx.data
+# VLM POC / tool venvs
+tools/**/.venv/

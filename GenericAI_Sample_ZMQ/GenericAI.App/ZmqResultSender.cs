@@ -17,7 +17,7 @@ namespace GenericAI.App
     // thread-safe (the send timer + callback path can race).
     internal sealed class ZmqResultSender : IDisposable
     {
-        private const string ZMQ = "libzmq-v143-mt-4_2_0.dll";
+        private const string ZMQ = "libzmq-v143-mt-4_3_5.dll";
         private const int ZMQ_PUSH = 8;
         private const int ZMQ_SNDHWM = 23;
         private const int ZMQ_SNDTIMEO = 28;

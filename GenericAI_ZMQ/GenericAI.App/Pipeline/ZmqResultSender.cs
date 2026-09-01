@@ -1,6 +1,6 @@
 // ZMQ result transport -- compiled only when USE_ZMQ is defined (Release/Debug).
 // The Release-NoZmq configuration leaves this out entirely, so the output has no
-// libzmq (libzmq-v143-mt-4_2_0.dll) dependency.
+// libzmq (libzmq-v143-mt-4_3_5.dll) dependency.
 #if USE_ZMQ
 using System;
 using System.Runtime.InteropServices;
@@ -18,7 +18,7 @@ namespace GenericAI.App
     // thread-safe and the SendWorker pool has multiple threads.
     internal sealed class ZmqResultSender : IDisposable
     {
-        private const string ZMQ = "libzmq-v143-mt-4_2_0.dll";
+        private const string ZMQ = "libzmq-v143-mt-4_3_5.dll";
         private const int ZMQ_PUSH = 8;
         private const int ZMQ_SNDHWM = 23;
         private const int ZMQ_SNDTIMEO = 28;

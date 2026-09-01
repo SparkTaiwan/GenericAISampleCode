@@ -31,7 +31,7 @@ English version：see [README.md](README.md).
 | `System.Buffers` | 4.5.1 | App | 影格路徑上的 pooled buffer。 |
 | `Microsoft.ML.OnnxRuntime.DirectML` | 1.14.1 | Native | Person detector 推論。 |
 | `Microsoft.AI.DirectML` | 1.10.1 | Native | DirectML execution provider。 |
-| `libzmq-vc143` | 4.2.0 | Native | ZMQ frame + result 傳輸。 |
+| `libzmq-vc143` | 4.3.5 | Native | ZMQ frame + result 傳輸。 |
 | `FFmpeg-lgpl3` | 4.4.1 | Native | H.264 / H.265 NAL 解碼（ZMQ frame plane）。 |
 | `libjpeg-turbo`（位於 `native-deps/win-x64/turbojpeg.dll`） | — | App | Callback JPEG encode。 |
 
@@ -57,7 +57,7 @@ Release build 後，部署所需的所有檔案都在 `bin/Release/x64/`：
 | `GenericAI.Native.dll` | Detector pipeline + ZMQ receiver + NAL 解碼（`GAI_*` C ABI）。 |
 | `onnxruntime.dll`、`DirectML.dll` | Person detector 用的 ONNX Runtime + DirectML EP。 |
 | `turbojpeg.dll` + `turbojpeg.LICENSE.md` | Callback JPEG encode（授權檔須隨 dll 一起出貨）。 |
-| `libzmq-v143-mt-4_2_0.dll`、`libsodium.dll` | ZMQ 傳輸（frame + result plane）。 |
+| `libzmq-v143-mt-4_3_5.dll`、`libsodium.dll` | ZMQ 傳輸（frame + result plane）。 |
 | `avcodec-58.dll`、`avformat-58.dll`、`avutil-56.dll`、`swscale-5.dll`、`swresample-3.dll`、`avfilter-7.dll`、`avdevice-58.dll`、`postproc-55.dll` | FFmpeg — ZMQ 影格的 H.264/H.265 解碼。 |
 | `Newtonsoft.Json.dll`、`System.Buffers.dll` | Managed 相依。 |
 | `models\`（`yolox_m_fp16.onnx` + `LICENSE.md`） | Person detector 模型（Apache 2.0 授權文字須隨附）。 |
