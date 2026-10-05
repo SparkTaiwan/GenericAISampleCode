@@ -19,10 +19,13 @@ using namespace std;
 
 namespace {
 
-// 1 = no subsample (full resolution); raise to 2+ to trade detection
-// granularity for throughput on multi-channel 1080p deployments.
-constexpr int kSubSample = 1;
-constexpr int subsample_factor = kSubSample * kSubSample;
+// Motion is judged on kBlock x kBlock block means, not single pixels. Sensor
+// grain and the noise pattern that changes with every I-frame are high-
+// frequency and cancel out in the mean; a moving object shifts the brightness
+// of whole blocks and survives. Per-pixel diffs on a dark, grainy scene made
+// >5% of a full-frame ROI "change" on every I-frame (a trigger every GOP even
+// at sensitivity ~10, threshold 90).
+constexpr int kBlock = 8;
 
 // PointInPolygon / PolygonArea are shared helpers in roi_geometry.h.
 
@@ -60,11 +63,16 @@ int MotionDetector::Detect(MotionDetectorContext& ctx,
         // sensitivity/threshold, so the pixel threshold + min-area ratio are computed
         // inside the ROI loop below rather than once for the whole channel. Formulae:
         //   pixel_threshold = 8 + (threshold/100) * 12      -> 8..20 (non-zero floor
-        //     so threshold=0 doesn't make every ±1 compression artifact register)
-        //   min_ratio       = 0.10 - (sensitivity/100) * 0.095  -> 0.005..0.10 of
+        //     so threshold=0 doesn't make every ±1 compression artifact register),
+        //     compared against the change of a block's MEAN luminance (see kBlock)
+        //   min_ratio       = 0.10 * 0.005^(sensitivity/100)  -> 10%..0.05% of
         //     each ROI's own area, so the same sensitivity behaves consistently on
         //     a 320x240 ROI and a 1920x1080 ROI (absolute pixel-count thresholds
-        //     do not).
+        //     do not). Log scale: every +25 is ~3.8x more sensitive, so the whole
+        //     slider range is usable. On a full-frame 1080p ROI this needs ~14.7k
+        //     changed pixels at 50, ~3.9k at 75, ~1k at 100. The former linear
+        //     10%..0.5% mapping needed ~109k at 50 and missed real motion; a
+        //     10%..0.005% floor (~104 px at 100) triggered on noise.
         const int y_size = width * height;
         if (y_size <= 0) return 0;
         const unsigned char* current_gray = yuv420_frame;
@@ -85,7 +93,7 @@ int MotionDetector::Detect(MotionDetectorContext& ctx,
             const int t = max(0, min(100, roi.threshold));
             const int sensitivity = max(0, min(100, roi.sensitivity));
             const int pixel_threshold = 8 + static_cast<int>((t / 100.0) * 12.0);
-            const float min_ratio = 0.10f - (sensitivity / 100.0f) * 0.095f;
+            const float min_ratio = 0.10f * std::pow(0.005f, sensitivity / 100.0f);
 
             // Prefer the ACTUAL polygon (Argo sends up to 10 points) when present;
             // fall back to the rect for legacy/degenerate ROIs (<3 points). The rect
@@ -116,32 +124,42 @@ int MotionDetector::Detect(MotionDetectorContext& ctx,
                 region_area = static_cast<double>((roi_x2 - roi_x1) * (roi_y2 - roi_y1));
             }
 
-            const int effective_min_area = max(1,
-                static_cast<int>(region_area * min_ratio) / subsample_factor);
+            const int effective_min_area = max(1, static_cast<int>(region_area * min_ratio));
 
-            // Fused per-ROI scan: diff + threshold + count in one pass, with
-            // early-exit once motion_pixels reaches effective_min_area so a
-            // multi-channel deployment doesn't pay for a full-ROI scan on every
-            // triggered frame. motion_pixels at the log point therefore reflects
-            // the trigger threshold, not the full count — logged with ">=".
+            // Block scan over the ROI bbox: a block counts as changed when its mean
+            // luminance moved by more than pixel_threshold, and then contributes all
+            // of its pixels to motion_pixels, so min_ratio keeps meaning "fraction of
+            // the ROI area". Edge blocks are clipped to the bbox. Early-exit once
+            // motion_pixels reaches effective_min_area so a multi-channel deployment
+            // doesn't pay for a full-ROI scan on every triggered frame; motion_pixels
+            // at the log point therefore reflects the trigger threshold, not the full
+            // count — logged with ">=".
+            const unsigned char* previous_gray = ctx.previous_frame.data();
             int motion_pixels = 0;
             bool roi_done = false;
-            for (int y = roi_y1; y < roi_y2 && !roi_done; y += kSubSample) {
-                const unsigned char* curr_row = current_gray + y * width;
-                const unsigned char* prev_row = ctx.previous_frame.data() + y * width;
-                for (int x = roi_x1; x < roi_x2; x += kSubSample) {
-                    const int diff = std::abs(
-                        static_cast<int>(curr_row[x]) - static_cast<int>(prev_row[x]));
-                    if (diff > pixel_threshold) {
-                        // Only pay the polygon test for pixels that already changed —
-                        // motion pixels are sparse, so this keeps the cost close to the
-                        // plain rect scan even for many-vertex ROIs.
-                        if (poly != nullptr && !PointInPolygon(x, y, *poly)) continue;
-                        ++motion_pixels;
-                        if (motion_pixels >= effective_min_area) {
-                            roi_done = true;
-                            break;
+            for (int by = roi_y1; by < roi_y2 && !roi_done; by += kBlock) {
+                const int bh = min(kBlock, roi_y2 - by);
+                for (int bx = roi_x1; bx < roi_x2; bx += kBlock) {
+                    const int bw = min(kBlock, roi_x2 - bx);
+                    int sum_curr = 0, sum_prev = 0;
+                    for (int y = by; y < by + bh; ++y) {
+                        const unsigned char* curr_row = current_gray + y * width + bx;
+                        const unsigned char* prev_row = previous_gray + y * width + bx;
+                        for (int x = 0; x < bw; ++x) {
+                            sum_curr += curr_row[x];
+                            sum_prev += prev_row[x];
                         }
+                    }
+                    const int block_pixels = bw * bh;
+                    // |mean_curr - mean_prev| > pixel_threshold, without dividing.
+                    if (std::abs(sum_curr - sum_prev) <= pixel_threshold * block_pixels) continue;
+                    // Only pay the polygon test for blocks that already changed; the
+                    // block belongs to the ROI when its centre does.
+                    if (poly != nullptr && !PointInPolygon(bx + bw / 2, by + bh / 2, *poly)) continue;
+                    motion_pixels += block_pixels;
+                    if (motion_pixels >= effective_min_area) {
+                        roi_done = true;
+                        break;
                     }
                 }
             }
@@ -153,7 +171,8 @@ int MotionDetector::Detect(MotionDetectorContext& ctx,
                     cout << "[MotionDetector] Motion detected in ROI[" << roi_idx << "] ("
                          << (poly != nullptr ? "polygon" : "rect") << ", bbox "
                          << roi_x1 << "," << roi_y1 << " to " << roi_x2 << "," << roi_y2
-                         << ") - >=" << motion_pixels << " changed pixels" << endl;
+                         << ") - >=" << motion_pixels << " changed pixels (" << kBlock << "x" << kBlock
+                         << " block means)" << endl;
                 }
             }
         }

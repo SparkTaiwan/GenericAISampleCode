@@ -246,8 +246,8 @@ Detector-internal constants (not in the wire protocol): NMS IoU threshold fixed 
 
 | Field           | Range  | Effect                                                                                                                               |
 | --------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `threshold`   | 0..100 | Mapped to the per-pixel diff threshold `8 .. 40` (8-bit grayscale). Higher = only larger luminance changes count.                  |
-| `sensitivity` | 0..100 | Mapped to the minimum changed-pixel ratio `0.20 .. 0.005` of each ROI's own area. Higher = fewer changed pixels needed to trigger. |
+| `threshold`   | 0..100 | Mapped to `8 .. 20` (8-bit grayscale), compared against the change of each 8x8 block's mean luminance (block averaging cancels sensor grain and I-frame noise). Higher = only larger luminance changes count. |
+| `sensitivity` | 0..100 | Mapped (log scale) to the minimum changed-pixel ratio `0.10 .. 0.0005` (10% .. 0.05%) of each ROI's own area: `0.10 * 0.005^(sensitivity/100)`. Higher = fewer changed pixels needed to trigger. |
 
 The two axes are orthogonal: `threshold` is "how strong does each pixel change have to be", `sensitivity` is "how many such pixels do we need".
 
