@@ -1,0 +1,64 @@
+#pragma once
+#include "idetector.h"
+
+// === Detector selection flag ===
+//  - DetectorKind::Motion  -> frame-difference motion detection (detector_motion.cpp)
+//  - DetectorKind::Person  -> ONNX person detection (detector_person.cpp, requires kDefaultModelPath to exist)
+//
+// This is now only the DEFAULT: the host can override it at runtime via
+// `detector=motion|objectdetection` (CommandLineArgs -> GAI_InitializeChannels's
+// detector_kind). The value below applies only when the host passes no detector=
+// (detector_kind < 0). To change the default: edit -> rebuild -> restart the exe.
+// Matches the behavior of kDetectorMode in the old CSharp/SampleDLL/dllmain.cpp:19.
+namespace gai {
+
+constexpr DetectorKind kDetectorKind = DetectorKind::Motion;
+
+// Resolved against the executable's directory (exports.cpp ResolveAgainstExe); CMake copies
+// ../GenericAI_ZMQ/native-deps/models/yolox_m_fp16.onnx there as models/yolo.onnx at build time.
+// The old equivalent path is g_modelPath in CSharp/SampleDLL/detectors_person.cpp:72.
+constexpr const char* kDefaultModelPath = "models/yolo.onnx";
+
+// === Inference execution device (only meaningful in Person mode) ===
+//  - true  -> prefer CUDA (NVIDIA GPU), automatically fall back to CPU on failure
+//             (CPU-only onnxruntime package, no driver, CUDA/cuDNN libs not found).
+//  - false -> force CPU, never attempt GPU
+// Switching steps are the same as kDetectorKind: edit one line -> rebuild -> restart the exe.
+// To check the current EP after startup: see the console "[AI] Person detector loaded: ... EP=..."
+// or the "detector backend = ..." line in <log dir>/GenericAI-<port>.log
+// (default /var/log/spark/GenericAI, see host/file_logger.cpp).
+constexpr bool kPreferGpu = true;
+
+// CUDA device ordinal used when kPreferGpu is true (nvidia-smi -L order).
+constexpr int kCudaDeviceId = 0;
+
+// === Per-frame timing log ===
+//  - true  -> TimingRecorder prints one [TIMING] line per frame to the console
+//             and writes timing-<port>.log.
+//  - false -> all TimingRecorder Mark/Flush call sites compile away (zero
+//             per-frame overhead).
+// This gate is ONLY the high-frequency per-frame timing instrumentation. The
+// informational native console lines ([AI] .../[PersonDetector] .../[channel N]
+// .../[MotionDetector] .../[zmq] ...) are NOT controlled here -- they are gated
+// at RUNTIME by gai::VerboseLogging() (host_log.h), driven by the host's
+// GenericAI.Config show_native_debug flag (GAI_SetVerbose), so they toggle
+// without a rebuild. std::cerr error lines always print.
+// Matching switch on the C# side: TimingRecorder.Enabled in TimingRecorder.cs
+// (that one also writes timing-<port>.log via FileLogger).
+constexpr bool kEnableTimingLog = false;
+
+// === Pipelined inference (route B) ===
+//  - true  -> SharedDetectorScheduler splits InferLoop into PreLoop (CPU
+//             preprocess) + GpuLoop (session.Run + CPU postprocess) with a
+//             small pre->gpu queue between them. CPU work overlaps with GPU
+//             inference; throughput rises from ~24 fps to ~37 fps under
+//             DirectML on the Person path (Windows measurement).
+//  - false -> single-thread InferLoop (sequential pre -> gpu -> post). Use
+//             this to A/B compare or to fall back if the pipelined path
+//             regresses.
+// Only effective when the active detector reports HasPipelined() == true
+// (PersonAdapter does; MotionAdapter does not). When false the scheduler
+// uses InferLoop for both kinds, identical to the route A baseline.
+constexpr bool kEnablePipelinedInference = true;
+
+}  // namespace gai

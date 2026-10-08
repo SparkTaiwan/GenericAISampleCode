@@ -24,5 +24,24 @@ namespace GenericAI.App
         {
             get { return string.IsNullOrEmpty(s_error); }
         }
+
+        // Set once native init has finished: after the default ai_settings seed
+        // and the ZMQ receiver start, or after the decision to run degraded. The
+        // HTTP listeners are up before that (so the port-in-use check comes
+        // first); until then /SetParameters answers 503 so the recorder retries
+        // (it keeps m_needSendSetting until it gets a 200). Answering 200 there
+        // used to drop the settings — native had no channels yet — and the
+        // default seed then overwrote them.
+        private static volatile bool s_nativeReady;
+
+        public static void SetNativeReady()
+        {
+            s_nativeReady = true;
+        }
+
+        public static bool IsNativeReady
+        {
+            get { return s_nativeReady; }
+        }
     }
 }

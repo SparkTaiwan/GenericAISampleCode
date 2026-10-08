@@ -1,0 +1,848 @@
+#include "pch.h"
+#include "detector_person.h"
+#include "gai_config.h"
+#include "host_log.h"
+#include "timing_recorder.h"
+
+#include <onnxruntime_cxx_api.h>
+
+// GPU EP on Linux is CUDA (replaces DirectML on Windows). It is appended through
+// OrtApi::SessionOptionsAppendExecutionProvider_CUDA, which exists in every
+// onnxruntime build: a CPU-only package returns a non-null OrtStatus ("CUDA
+// execution provider is not enabled"), and the GPU package returns one when
+// libonnxruntime_providers_cuda.so / CUDA / cuDNN cannot be loaded. Either way
+// we fall back to CPU, mirroring the Windows DirectML -> CPU flow.
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+
+// GridStride/Letterbox/ScoredBox and the pure geometry helpers
+// (GenerateGridStrides/ComputeLetterbox/Iou/Nms) live in yolox_geometry.h so
+// the unit tests can share them.
+#include "yolox_geometry.h"
+
+namespace {
+
+inline unsigned char ClampU8(int v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return static_cast<unsigned char>(v);
+}
+
+inline void YuvToRgb(int Y, int U, int V,
+                     unsigned char& R, unsigned char& G, unsigned char& B) {
+    // BT.601 limited-range (typical for surveillance YUV420).
+    const int c = Y;
+    const int d = U - 128;
+    const int e = V - 128;
+    R = ClampU8(c + ((359 * e) >> 8));            // 1.402
+    G = ClampU8(c - ((88 * d + 183 * e) >> 8));   // -0.344, -0.714
+    B = ClampU8(c + ((454 * d) >> 8));            // 1.772
+}
+
+// Preprocess I420 planar YUV -> letterboxed RGB CHW float32 (no normalize).
+// All row-invariant work (sy / uvy / plane row pointers) is hoisted out of
+// the inner loop, and the source-x per content column comes from sx_lut —
+// caller-provided scratch of >= input_w ints, filled here once per frame.
+// Output is bit-identical to the per-pixel formulation (same expressions,
+// same clamp order); this throughput matters because PreLoop's CPU time
+// gates the pipelined fps.
+void PreprocessYoloxI420(const unsigned char* yuv, int orig_w, int orig_h,
+                         int input_w, int input_h,
+                         const Letterbox& lb,
+                         int* sx_lut,
+                         float* out_chw) {
+    const unsigned char* Yp = yuv;
+    const int uv_w = orig_w / 2;
+    const int uv_h = orig_h / 2;
+    const unsigned char* Up = yuv + orig_w * orig_h;
+    const unsigned char* Vp = Up + uv_w * uv_h;
+
+    const float inv_scale = 1.0f / lb.scale;
+    const int chw_stride = input_h * input_w;
+    const int orig_w_minus_1 = orig_w - 1;
+    const int orig_h_minus_1 = orig_h - 1;
+    const int uv_w_minus_1 = uv_w - 1;
+    const int uv_h_minus_1 = uv_h - 1;
+
+    // Content columns [x_begin, x_end) in output space; everything outside
+    // is letterbox padding (114).
+    int x_begin = lb.pad_x;
+    if (x_begin < 0) x_begin = 0;
+    int x_end = lb.pad_x + lb.new_w;
+    if (x_end > input_w) x_end = input_w;
+
+    for (int x = x_begin; x < x_end; ++x) {
+        int sx = static_cast<int>((x - lb.pad_x) * inv_scale);
+        if (sx > orig_w_minus_1) sx = orig_w_minus_1;
+        sx_lut[x] = sx;
+    }
+
+    for (int y = 0; y < input_h; ++y) {
+        float* rowR = out_chw + y * input_w;
+        float* rowG = rowR + chw_stride;
+        float* rowB = rowG + chw_stride;
+
+        const int ry = y - lb.pad_y;
+        if (ry < 0 || ry >= lb.new_h) {
+            for (int x = 0; x < input_w; ++x) {
+                rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
+            }
+            continue;
+        }
+
+        int sy = static_cast<int>(ry * inv_scale);
+        if (sy > orig_h_minus_1) sy = orig_h_minus_1;
+        int uvy = sy >> 1;
+        if (uvy > uv_h_minus_1) uvy = uv_h_minus_1;
+        const unsigned char* Yrow = Yp + sy * orig_w;
+        const unsigned char* Urow = Up + uvy * uv_w;
+        const unsigned char* Vrow = Vp + uvy * uv_w;
+
+        for (int x = 0; x < x_begin; ++x) {
+            rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
+        }
+        for (int x = x_begin; x < x_end; ++x) {
+            const int sx = sx_lut[x];
+            int uvx = sx >> 1;
+            if (uvx > uv_w_minus_1) uvx = uv_w_minus_1;
+            unsigned char r, g, b;
+            YuvToRgb(Yrow[sx], Urow[uvx], Vrow[uvx], r, g, b);
+            rowR[x] = static_cast<float>(r);
+            rowG[x] = static_cast<float>(g);
+            rowB[x] = static_cast<float>(b);
+        }
+        for (int x = x_end; x < input_w; ++x) {
+            rowR[x] = 114.f; rowG[x] = 114.f; rowB[x] = 114.f;
+        }
+    }
+}
+
+// BoxOverlapsRoi moved to roi_geometry.h so it can be shared with other
+// detectors and adapters.
+
+// ----- Execution-provider helpers ----------------------------------------
+Ort::SessionOptions MakeGpuOptions() {
+    Ort::SessionOptions opts;
+    opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    opts.SetExecutionMode(ORT_SEQUENTIAL);
+    // One exe = one channel = one session. Cap inter-op so we don't
+    // over-subscribe the box when spark.recorder spawns many of us in parallel.
+    opts.SetInterOpNumThreads(1);
+    // GPU does the compute; the CPU intra-op pool would otherwise spin up one
+    // thread per core per process and just sit idle. Pin to 1 to keep the
+    // per-process thread-stack footprint flat when many of us run in parallel.
+    opts.SetIntraOpNumThreads(1);
+    return opts;
+}
+
+Ort::SessionOptions MakeCpuOptions(int intra_threads) {
+    Ort::SessionOptions opts;
+    opts.SetIntraOpNumThreads(intra_threads);
+    opts.SetInterOpNumThreads(1);
+    opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    return opts;
+}
+
+// Try to append the CUDA EP. Returns false (and fills err) if the provider
+// is not available — CPU-only onnxruntime package, no NVIDIA driver, or
+// libonnxruntime_providers_cuda.so / CUDA / cuDNN failing to load.
+bool TryAppendCuda(Ort::SessionOptions& opts, int device_id, std::string& err) {
+    try {
+        OrtCUDAProviderOptions cuda{};
+        cuda.device_id = device_id;
+        OrtStatus* status =
+            Ort::GetApi().SessionOptionsAppendExecutionProvider_CUDA(opts, &cuda);
+        if (status != nullptr) {
+            const char* msg = Ort::GetApi().GetErrorMessage(status);
+            err = msg ? msg : "(no message)";
+            Ort::GetApi().ReleaseStatus(status);
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        err = e.what();
+        return false;
+    } catch (...) {
+        err = "unknown error";
+        return false;
+    }
+}
+
+}  // namespace
+
+struct PersonDetector::Impl {
+    Ort::Env env;
+    Ort::Session session;
+    Ort::AllocatorWithDefaultOptions allocator;
+    // Shared by Warmup and every GpuFrame call; describes the same CPU arena
+    // each time, so build it once instead of per inference.
+    Ort::MemoryInfo mem_info{nullptr};
+
+    int input_h = 0;
+    int input_w = 0;
+    int num_classes = 0;
+
+    float nms_iou;
+    int target_class;
+
+    int stride_n = 1;
+
+    std::string input_name;
+    std::vector<std::string> output_names;
+    // c_str() cache for output_names, rebuilt at the end of LoadMetadata so we
+    // don't allocate a fresh vector<const char*> on every Detect call.
+    std::vector<const char*> output_names_c;
+
+    std::vector<GridStride> grid_strides;   // YOLOX only
+
+    std::string backend_label = "CPU";   // "CUDA(<id>)" or "CPU"
+    static constexpr int kCpuIntraThreads = 8;
+
+    bool try_gpu = true;
+
+    // ----- Process-wide pipeline pool (route B) ----------------------------
+    // K=2 in-flight slots so PreLoop can fill slot A while GpuLoop reads
+    // slot B. Each slot owns its preprocessed input tensor plus the ORT
+    // outputs that live across Phase2→Phase3 on the GpuLoop thread.
+    struct InFlight {
+        std::vector<float> input_buffer;        // 3 * input_h * input_w floats
+        std::vector<int> sx_lut;                // input_w ints, scratch for PreprocessYoloxI420
+        std::vector<Ort::Value> gpu_outputs;    // owned across Phase2→Phase3
+        Letterbox lb{};
+        float conf_threshold = 0.0f;
+        int orig_w = 0;
+        int orig_h = 0;
+        // Bounding-box area band as a fraction of the frame (0 = that bound disabled). Boxes
+        // smaller than min or larger than max are dropped in PostYolox. Derived from
+        // DetectorParams.min_object_size / max_object_size.
+        float min_object_area_frac = 0.0f;
+        float max_object_area_frac = 0.0f;
+    };
+    static constexpr int kPoolSize = 2;
+    std::array<InFlight, kPoolSize> in_flights{};
+    std::array<bool, kPoolSize> in_use{};
+    std::mutex pool_mtx;
+    std::condition_variable pool_cv;
+    bool pool_closed = false;
+
+    // Blocks until a slot is free or the pool is closed.
+    // Returns the slot index (0..kPoolSize-1), or -1 if shut down.
+    int AcquireSlotBlocking() {
+        std::unique_lock<std::mutex> lk(pool_mtx);
+        pool_cv.wait(lk, [&] {
+            if (pool_closed) return true;
+            for (int i = 0; i < kPoolSize; ++i) if (!in_use[i]) return true;
+            return false;
+        });
+        if (pool_closed) return -1;
+        for (int i = 0; i < kPoolSize; ++i) {
+            if (!in_use[i]) {
+                in_use[i] = true;
+                return i;
+            }
+        }
+        return -1;  // unreachable: predicate guarantees a free slot
+    }
+
+    void ReleaseSlot(int idx) {
+        if (idx < 0 || idx >= kPoolSize) return;
+        {
+            std::lock_guard<std::mutex> lk(pool_mtx);
+            in_use[idx] = false;
+        }
+        pool_cv.notify_one();
+    }
+
+    void ClosePool() {
+        {
+            std::lock_guard<std::mutex> lk(pool_mtx);
+            pool_closed = true;
+        }
+        pool_cv.notify_all();
+    }
+
+    Impl(const std::string& model_path, float iou, int cls, bool try_gpu_arg)
+        : env(ORT_LOGGING_LEVEL_WARNING, "PersonDetector"),
+          session(nullptr),
+          mem_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)),
+          nms_iou(iou),
+          target_class(cls)
+    {
+        try_gpu = try_gpu_arg;
+        BuildSessionWithFallback(model_path);
+        LoadMetadata(model_path);
+
+        // Pre-size every pool slot's input tensor so Phase1Prepare never
+        // allocates on the inference hot path. Dims are stable across the
+        // optional CUDA→CPU fallback (same model file, same input layout).
+        const size_t buf_size = static_cast<size_t>(3) * input_h * input_w;
+        for (auto& s : in_flights) {
+            s.input_buffer.assign(buf_size, 0.f);
+            s.sx_lut.assign(static_cast<size_t>(input_w), 0);
+        }
+
+        if (gai::VerboseLogging()) {
+            std::cout << "[AI] Person detector loaded: " << model_path
+                      << " (input=" << input_w << "x" << input_h
+                      << ", EP=" << backend_label << ")" << std::endl;
+        }
+
+        try {
+            Warmup();
+        } catch (const Ort::Exception& e) {
+            if (backend_label != "CPU") {
+                const std::string msg = std::string("[AI] ") + backend_label +
+                    " warmup failed: " + e.what() + ". Rebuilding session on CPU.";
+                std::cerr << msg << std::endl;
+                gai::HostLog(gai::HostLogLevel::Warn, msg);
+                Ort::SessionOptions cpu_opts = MakeCpuOptions(kCpuIntraThreads);
+                session = Ort::Session(env, model_path.c_str(), cpu_opts);
+                backend_label = "CPU";
+                LoadMetadata(model_path);
+                if (gai::VerboseLogging()) {
+                    std::cout << "[AI] Person detector now running on EP=CPU." << std::endl;
+                }
+                Warmup();
+            } else {
+                throw;
+            }
+        }
+    }
+
+    // ORTCHAR_T is char on Linux, so the UTF-8 model path goes straight in
+    // (the Windows build widens it to wchar_t first).
+    void BuildSessionWithFallback(const std::string& path) {
+        if (try_gpu) {
+            Ort::SessionOptions gpu_opts = MakeGpuOptions();
+            std::string gpu_err;
+            if (TryAppendCuda(gpu_opts, gai::kCudaDeviceId, gpu_err)) {
+                try {
+                    session = Ort::Session(env, path.c_str(), gpu_opts);
+                    backend_label = "CUDA(" + std::to_string(gai::kCudaDeviceId) + ")";
+                    return;
+                } catch (const Ort::Exception& e) {
+                    gpu_err = std::string("session build failed: ") + e.what();
+                }
+            }
+            const std::string msg = "[AI] CUDA EP unavailable (" + gpu_err + "). Using CPU.";
+            std::cerr << msg << std::endl;
+            gai::HostLog(gai::HostLogLevel::Warn, msg);
+        }
+        Ort::SessionOptions cpu_opts = MakeCpuOptions(kCpuIntraThreads);
+        session = Ort::Session(env, path.c_str(), cpu_opts);
+        backend_label = "CPU";
+    }
+
+    void LoadMetadata(const std::string& model_path) {
+        const size_t num_inputs = session.GetInputCount();
+        if (num_inputs != 1) {
+            throw std::runtime_error("Expected 1 input tensor, got " +
+                                     std::to_string(num_inputs));
+        }
+        {
+            Ort::AllocatedStringPtr iname = session.GetInputNameAllocated(0, allocator);
+            input_name = iname.get();
+        }
+        auto in_shape = session.GetInputTypeInfo(0)
+                               .GetTensorTypeAndShapeInfo().GetShape();
+        if (in_shape.size() != 4) {
+            throw std::runtime_error("Expected 4D input [1,3,H,W], got rank " +
+                                     std::to_string(in_shape.size()));
+        }
+        input_h = static_cast<int>(in_shape[2]);
+        input_w = static_cast<int>(in_shape[3]);
+        if (input_h <= 0 || input_w <= 0) {
+            throw std::runtime_error("Dynamic input shape not supported "
+                                     "(H,W must be static positive integers)");
+        }
+
+        const size_t num_outputs = session.GetOutputCount();
+        output_names.clear();
+        output_names.reserve(num_outputs);
+        std::vector<std::vector<int64_t>> out_shapes;
+        out_shapes.reserve(num_outputs);
+        for (size_t i = 0; i < num_outputs; ++i) {
+            Ort::AllocatedStringPtr oname = session.GetOutputNameAllocated(i, allocator);
+            output_names.emplace_back(oname.get());
+            out_shapes.push_back(session.GetOutputTypeInfo(i)
+                                        .GetTensorTypeAndShapeInfo().GetShape());
+        }
+
+        auto format_shape = [&]() {
+            std::ostringstream os;
+            for (size_t i = 0; i < out_shapes.size(); ++i) {
+                os << " [";
+                for (size_t d = 0; d < out_shapes[i].size(); ++d) {
+                    if (d) os << ",";
+                    os << out_shapes[i][d];
+                }
+                os << "]";
+            }
+            return os.str();
+        };
+
+        if (num_outputs != 1 || out_shapes[0].size() != 3 ||
+            out_shapes[0][2] <= 5 || out_shapes[0][2] == 4) {
+            throw std::runtime_error(
+                "Expected YOLOX-style output [1, N, 5+num_classes], got " +
+                std::to_string(num_outputs) + " outputs:" + format_shape());
+        }
+
+        num_classes = static_cast<int>(out_shapes[0][2]) - 5;
+        if (num_classes <= target_class) {
+            throw std::runtime_error(
+                "Target class " + std::to_string(target_class) +
+                " out of range (model num_classes=" +
+                std::to_string(num_classes) + ")");
+        }
+        grid_strides.clear();
+        GenerateGridStrides(input_w, input_h, grid_strides);
+        const int expected_anchors = static_cast<int>(out_shapes[0][1]);
+        if (static_cast<int>(grid_strides.size()) != expected_anchors) {
+            throw std::runtime_error(
+                "YOLOX grid mismatch: model anchors=" +
+                std::to_string(expected_anchors) +
+                " vs derived=" + std::to_string(grid_strides.size()));
+        }
+
+        // Rebuild the c_str cache here so it stays valid across a session
+        // rebuild (CUDA→CPU fallback re-enters LoadMetadata).
+        output_names_c.clear();
+        output_names_c.reserve(output_names.size());
+        for (auto& s : output_names) output_names_c.push_back(s.c_str());
+    }
+
+    void Warmup() {
+        std::vector<float> tmp(static_cast<size_t>(3) * input_h * input_w, 0.f);
+        const int64_t shape[4] = { 1, 3, input_h, input_w };
+        Ort::Value input = Ort::Value::CreateTensor<float>(
+            mem_info, tmp.data(), tmp.size(), shape, 4);
+
+        const char* in_names_c[1] = { input_name.c_str() };
+        session.Run(Ort::RunOptions{nullptr},
+                    in_names_c, &input, 1,
+                    output_names_c.data(), output_names_c.size());
+    }
+
+    // ----- Inference pipeline ------------------------------------------------
+    // Each frame goes through 3 stages: PreFrame (CPU YUV→tensor) → GpuFrame
+    // (ONNX session.Run) → PostFrame (decode + NMS). Single-shot Detect()
+    // runs all 3 inline on the InferLoop thread. Pipelined PreLoop runs
+    // PreFrame; GpuLoop runs GpuFrame + PostFrame. Either way the per-frame
+    // working data lives in an InFlight pool slot, indexed by an int and
+    // owned by Impl::in_flights[].
+
+    void PreFrame(InFlight& slot,
+                  const unsigned char* yuv, int orig_w, int orig_h,
+                  float conf_threshold, float min_object_area_frac, float max_object_area_frac) {
+        slot.orig_w = orig_w;
+        slot.orig_h = orig_h;
+        slot.conf_threshold = conf_threshold;
+        slot.min_object_area_frac = min_object_area_frac;
+        slot.max_object_area_frac = max_object_area_frac;
+        slot.lb = ComputeLetterbox(orig_w, orig_h, input_w, input_h);
+        PreprocessYoloxI420(yuv, orig_w, orig_h, input_w, input_h,
+                            slot.lb, slot.sx_lut.data(), slot.input_buffer.data());
+        if (gai::kEnableTimingLog) gai::TimingRecorder::Instance().MarkDetectPreDone();
+    }
+
+    void GpuFrame(InFlight& slot) {
+        const int64_t in_shape[4] = { 1, 3, input_h, input_w };
+        Ort::Value input = Ort::Value::CreateTensor<float>(
+            mem_info, slot.input_buffer.data(), slot.input_buffer.size(), in_shape, 4);
+        const char* in_names_c[1] = { input_name.c_str() };
+        slot.gpu_outputs = session.Run(Ort::RunOptions{nullptr},
+                                       in_names_c, &input, 1,
+                                       output_names_c.data(), output_names_c.size());
+        if (gai::kEnableTimingLog) gai::TimingRecorder::Instance().MarkDetectGpuDone();
+    }
+
+    void PostFrame(InFlight& slot, std::vector<DetectionRect>& out_boxes) {
+        PostYolox(slot, out_boxes);
+        // Free ORT-owned output tensors before the slot returns to the pool.
+        slot.gpu_outputs.clear();
+    }
+
+    void PostYolox(InFlight& slot, std::vector<DetectionRect>& out_boxes) {
+        const float* out_data = slot.gpu_outputs[0].GetTensorData<float>();
+        const int channels = num_classes + 5;
+
+        std::vector<ScoredBox> proposals;
+        proposals.reserve(64);
+        const float inv_scale = 1.0f / slot.lb.scale;
+        const int num_anchors = static_cast<int>(grid_strides.size());
+
+        for (int a = 0; a < num_anchors; ++a) {
+            const float* pred = out_data + a * channels;
+            const float obj = pred[4];
+
+            // Best class over the supported set (class_table.h), not a single
+            // target_class. The per-channel class_mask filter is applied later in
+            // ApplyRoiFilter so the decode stays channel-agnostic.
+            float score = 0.f;
+            int   best_cls = -1;
+            for (int s = 0; s < gai::kNumSupportedClasses; ++s) {
+                const int coco = gai::kSupportedClasses[s].coco_id;
+                if (coco >= num_classes) continue;   // model lacks this class channel
+                const float sc = obj * pred[5 + coco];
+                if (sc > score) { score = sc; best_cls = s; }
+            }
+            if (best_cls < 0 || score < slot.conf_threshold) continue;
+
+            const GridStride& gs = grid_strides[a];
+            const float cx = (pred[0] + gs.grid_x) * gs.stride;
+            const float cy = (pred[1] + gs.grid_y) * gs.stride;
+            const float w  = std::exp(pred[2]) * gs.stride;
+            const float h  = std::exp(pred[3]) * gs.stride;
+
+            float x0 = (cx - w * 0.5f - slot.lb.pad_x) * inv_scale;
+            float y0 = (cy - h * 0.5f - slot.lb.pad_y) * inv_scale;
+            float ww = w * inv_scale;
+            float hh = h * inv_scale;
+
+            if (x0 < 0) { ww += x0; x0 = 0; }
+            if (y0 < 0) { hh += y0; y0 = 0; }
+            if (x0 + ww > slot.orig_w) ww = slot.orig_w - x0;
+            if (y0 + hh > slot.orig_h) hh = slot.orig_h - y0;
+            if (ww <= 1.f || hh <= 1.f) continue;
+
+            // Object-size band filter (ai_settings object_size_min / object_size_max): drop boxes
+            // whose area falls outside the configured fraction band. 0 = that bound disabled.
+            if (slot.min_object_area_frac > 0.0f || slot.max_object_area_frac > 0.0f) {
+                const float frame_area = static_cast<float>(slot.orig_w) * static_cast<float>(slot.orig_h);
+                if (frame_area > 0.0f) {
+                    const float box_area = ww * hh;
+                    if (slot.min_object_area_frac > 0.0f && box_area < slot.min_object_area_frac * frame_area)
+                        continue;
+                    if (slot.max_object_area_frac > 0.0f && box_area > slot.max_object_area_frac * frame_area)
+                        continue;
+                }
+            }
+
+            ScoredBox sb;
+            sb.box.x = static_cast<int>(x0);
+            sb.box.y = static_cast<int>(y0);
+            sb.box.w = static_cast<int>(ww);
+            sb.box.h = static_cast<int>(hh);
+            sb.box.cls = best_cls;
+            sb.box.score = score;
+            sb.score = score;
+            proposals.push_back(sb);
+        }
+
+        Nms(proposals, nms_iou, out_boxes);
+    }
+
+    float ComputeConfThreshold(const gai::DetectorParams& params) const {
+        // Explicit per-channel ai_settings confidence wins when set (>=0); else
+        // fall back to the legacy threshold-derived value (unaffected channels).
+        if (params.confidence >= 0.0f) {
+            float c = params.confidence;
+            return c > 1.0f ? 1.0f : c;
+        }
+        int ti = params.threshold; if (ti < 0) ti = 0; else if (ti > 100) ti = 100;
+        return 0.20f + (ti / 100.f) * 0.50f;
+    }
+
+    // Extraction (pre-NMS) confidence gate for a per-ROI world: the LOWEST effective
+    // confidence any ROI uses, so no box a ROI might want is dropped early. Per-ROI
+    // filtering re-applies each ROI's own confidence after NMS (ApplyRoiFilter). With
+    // no ROI override this equals the channel threshold, so busy-scene NMS load is
+    // unchanged in the common case.
+    float MinEffectiveConf(const ROIRect* roi_rects, int roi_count,
+                           const gai::DetectorParams& params) const {
+        const float channel = ComputeConfThreshold(params);
+        if (roi_count <= 0 || roi_rects == nullptr) return channel;
+        float m = channel;
+        for (int i = 0; i < roi_count; ++i) {
+            float c = roi_rects[i].confidence >= 0.0f
+                ? (roi_rects[i].confidence > 1.0f ? 1.0f : roi_rects[i].confidence)
+                : channel;
+            if (c < m) m = c;
+        }
+        return m;
+    }
+
+    // min_object_size is a percentage of frame area (0..100); convert to a 0..1 area
+    // fraction. <=0 (or unset) means no lower-size filter.
+    static float ComputeMinObjectAreaFrac(const gai::DetectorParams& params) {
+        float pct = params.min_object_size;
+        if (pct <= 0.0f) return 0.0f;
+        if (pct > 100.0f) pct = 100.0f;
+        return pct / 100.0f;
+    }
+
+    // max_object_size is a percentage of frame area (0..100); convert to a 0..1 area
+    // fraction. <0 or >=100 (or unset) means no upper-size filter (returns 0 = disabled).
+    static float ComputeMaxObjectAreaFrac(const gai::DetectorParams& params) {
+        float pct = params.max_object_size;
+        if (pct < 0.0f || pct >= 100.0f) return 0.0f;
+        return pct / 100.0f;
+    }
+
+    // Applies the bbox→ROI overlap filter; populates ctx.last_detections (kept
+    // boxes) and detected_roi_indices (which ROIs were hit). Sole toucher of
+    // ctx.last_detections — including the clear below: in the pipelined route
+    // Phase1Prepare (PreLoop thread) must not clear it, because Phase3Post
+    // (GpuLoop thread) may be writing the previous frame of the same channel
+    // concurrently.
+    void ApplyRoiFilter(PersonDetectorContext& ctx,
+                        std::vector<DetectionRect>& raw,
+                        const ROIRect* roi_rects, int roi_count,
+                        const std::vector<std::vector<GAI_Roi>>& original_roi_points,
+                        std::vector<int>& detected_roi_indices) {
+        ctx.last_detections.clear();
+        for (int i = 0; i < gai::kNumSupportedClasses; ++i) ctx.last_class_counts[i] = 0;
+
+        // class_table.h supported-index bitmask test; mask < 0 => all enabled.
+        auto classEnabled = [](int cls, int mask) -> bool {
+            if (cls < 0 || cls >= gai::kNumSupportedClasses) return false;
+            return mask < 0 || (mask & (1 << cls)) != 0;
+        };
+        // Object-size band as % of frame area (0..100). min <=0 = no lower limit;
+        // max <=0 or >=100 = no upper limit.
+        auto sizeOk = [](const DetectionRect& b, float min_pct, float max_pct, int fw, int fh) -> bool {
+            if (fw <= 0 || fh <= 0) return true;
+            const float frame_area = static_cast<float>(fw) * static_cast<float>(fh);
+            if (frame_area <= 0.0f) return true;
+            const float box_area = static_cast<float>(b.w) * static_cast<float>(b.h);
+            if (min_pct > 0.0f && box_area < (min_pct / 100.0f) * frame_area) return false;
+            if (max_pct > 0.0f && max_pct < 100.0f && box_area > (max_pct / 100.0f) * frame_area) return false;
+            return true;
+        };
+
+        // A detection belongs to ROI r when its box overlaps that ROI. Prefer the
+        // actual polygon (Argo sends up to 10 points) and fall back to the rect
+        // bbox for a degenerate ROI (<3 points).
+        auto boxInRoi = [&](const DetectionRect& b, int r) -> bool {
+            if (static_cast<size_t>(r) < original_roi_points.size() &&
+                original_roi_points[r].size() >= 3) {
+                return BoxOverlapsPolygon(b, original_roi_points[r]);
+            }
+            return BoxOverlapsRoi(b, roi_rects[r]);
+        };
+
+        if (roi_count <= 0 || roi_rects == nullptr) {
+            // No ROI: apply the channel-wide confidence/class/size (extraction is now
+            // permissive, so these must be re-checked here).
+            for (auto& b : raw) {
+                if (b.score < ctx.channel_conf) continue;
+                if (!classEnabled(b.cls, ctx.class_mask)) continue;
+                if (!sizeOk(b, ctx.channel_size_min, ctx.channel_size_max, ctx.frame_w, ctx.frame_h)) continue;
+                ctx.last_class_counts[b.cls]++;
+                ctx.last_detections.push_back(b);
+            }
+        } else {
+            std::vector<char> roi_hit(roi_count, 0);
+            for (const auto& b : raw) {
+                bool keep = false;
+                for (int r = 0; r < roi_count; ++r) {
+                    const ROIRect& roi = roi_rects[r];
+                    // Per-ROI values fall back to the channel when unset (-1).
+                    const float conf = roi.confidence      >= 0.0f ? roi.confidence      : ctx.channel_conf;
+                    const int   mask = roi.class_mask       >= 0    ? roi.class_mask       : ctx.class_mask;
+                    const float smin = roi.object_size_min >= 0.0f ? roi.object_size_min : ctx.channel_size_min;
+                    const float smax = roi.object_size_max >= 0.0f ? roi.object_size_max : ctx.channel_size_max;
+
+                    if (b.score < conf) continue;
+                    if (!classEnabled(b.cls, mask)) continue;
+                    if (!sizeOk(b, smin, smax, ctx.frame_w, ctx.frame_h)) continue;
+                    if (!boxInRoi(b, r)) continue;
+
+                    roi_hit[r] = 1;
+                    keep = true;
+                }
+                if (keep) {
+                    ctx.last_class_counts[b.cls]++;
+                    ctx.last_detections.push_back(b);
+                }
+            }
+            for (int r = 0; r < roi_count; ++r) {
+                if (roi_hit[r]) detected_roi_indices.push_back(r);
+            }
+        }
+    }
+
+};
+
+PersonDetector::PersonDetector(const std::string& model_path,
+                               float nms_iou,
+                               int target_class,
+                               bool try_gpu)
+    : m_impl(new Impl(model_path, nms_iou, target_class, try_gpu))
+{
+}
+
+PersonDetector::~PersonDetector() = default;
+
+std::string PersonDetector::GetBackendLabel() const {
+    return m_impl ? m_impl->backend_label : std::string();
+}
+
+std::unique_ptr<gai::DetectorContext> PersonDetector::CreateContext() {
+    if (m_impl->input_h <= 0 || m_impl->input_w <= 0) {
+        throw std::runtime_error("PersonDetector::CreateContext: model dims not initialized");
+    }
+    // input_buffer no longer lives in ctx — it moved to Impl::in_flights[]
+    // (the pipelined pool). ctx only carries cross-frame per-channel state.
+    return std::unique_ptr<PersonDetectorContext>(new PersonDetectorContext());
+}
+
+int PersonDetector::Detect(PersonDetectorContext& ctx,
+                           const unsigned char* yuv420_frame, int width, int height,
+                           const ROIRect* roi_rects, int roi_count,
+                           const std::vector<std::vector<GAI_Roi>>& original_roi_points,
+                           std::vector<int>& detected_roi_indices,
+                           const gai::DetectorParams& params) {
+    // Single-shot path. Runs PreFrame → GpuFrame → PostFrame on one acquired
+    // pool slot. The pipelined PreLoop/GpuLoop split the same 3 calls across
+    // two threads via Phase1Prepare / Phase2Gpu / Phase3Post; behaviour is
+    // identical, only the threading differs.
+    detected_roi_indices.clear();
+    ctx.last_detections.clear();
+
+    if (yuv420_frame == nullptr || width <= 0 || height <= 0) return 0;
+
+    // Frame decimation: run inference once per stride_n frames.
+    if (++ctx.stride_counter < m_impl->stride_n) return 0;
+    ctx.stride_counter = 0;
+
+    // Per-ROI world: extract at the lowest confidence any ROI wants and defer the
+    // size band to ApplyRoiFilter; store the channel fallbacks for ROIs that don't
+    // override. (Confidence/class/size are re-applied per ROI after NMS.)
+    const float extract_conf = m_impl->MinEffectiveConf(roi_rects, roi_count, params);
+    ctx.class_mask       = params.class_mask;
+    ctx.channel_conf     = m_impl->ComputeConfThreshold(params);
+    ctx.channel_size_min = params.min_object_size;   // % of frame (or <0 unset)
+    ctx.channel_size_max = params.max_object_size;
+    ctx.frame_w = width;
+    ctx.frame_h = height;
+
+    const int slot_idx = m_impl->AcquireSlotBlocking();
+    if (slot_idx < 0) return 0;   // pool closed (shutdown)
+    auto& slot = m_impl->in_flights[slot_idx];
+
+    std::vector<DetectionRect> raw;
+    try {
+        // Size band OFF at extraction (0,0) — applied per ROI in ApplyRoiFilter.
+        m_impl->PreFrame(slot, yuv420_frame, width, height, extract_conf, 0.0f, 0.0f);
+        m_impl->GpuFrame(slot);
+        m_impl->PostFrame(slot, raw);
+    } catch (const Ort::Exception& e) {
+        std::cerr << "[AI] ORT inference failed: " << e.what() << std::endl;
+        m_impl->ReleaseSlot(slot_idx);
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[AI] Inference failed: " << e.what() << std::endl;
+        m_impl->ReleaseSlot(slot_idx);
+        return 0;
+    }
+    m_impl->ReleaseSlot(slot_idx);
+
+    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, original_roi_points, detected_roi_indices);
+
+    if (gai::VerboseLogging()) {
+        if (!ctx.last_detections.empty()) {
+            std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
+                      << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+        }
+    }
+
+    return static_cast<int>(ctx.last_detections.size());
+}
+
+int PersonDetector::Phase1Prepare(PersonDetectorContext& ctx,
+                                  const unsigned char* yuv420_frame, int width, int height,
+                                  const ROIRect* roi_rects, int roi_count,
+                                  const gai::DetectorParams& params) {
+    // Mirrors Detect's preamble: validate inputs, honour stride decimation.
+    // Returns negative codes for shortcuts so the caller (PreLoop) can route
+    // the queue item correctly. ctx.last_detections is NOT cleared here —
+    // this runs on the PreLoop thread while Phase3Post (GpuLoop thread) may
+    // still be writing it for the previous frame of the same channel;
+    // ApplyRoiFilter clears it on the consumer side instead.
+    if (yuv420_frame == nullptr || width <= 0 || height <= 0) return -1;
+
+    if (++ctx.stride_counter < m_impl->stride_n) return -1;
+    ctx.stride_counter = 0;
+
+    // Permissive extraction (see Detect): min confidence across ROIs, size band OFF.
+    // Channel fallbacks stored so Phase3Post/ApplyRoiFilter (no params) can resolve
+    // per-ROI values that inherit the channel.
+    const float extract_conf = m_impl->MinEffectiveConf(roi_rects, roi_count, params);
+    ctx.class_mask       = params.class_mask;
+    ctx.channel_conf     = m_impl->ComputeConfThreshold(params);
+    ctx.channel_size_min = params.min_object_size;
+    ctx.channel_size_max = params.max_object_size;
+    ctx.frame_w = width;
+    ctx.frame_h = height;
+    const int slot_idx = m_impl->AcquireSlotBlocking();
+    if (slot_idx < 0) return -2;   // pool closed mid-acquire (shutdown)
+
+    auto& slot = m_impl->in_flights[slot_idx];
+    try {
+        m_impl->PreFrame(slot, yuv420_frame, width, height, extract_conf, 0.0f, 0.0f);
+    } catch (const std::exception& e) {
+        std::cerr << "[AI] Preprocess failed: " << e.what() << std::endl;
+        m_impl->ReleaseSlot(slot_idx);
+        return -1;
+    }
+    return slot_idx;
+}
+
+void PersonDetector::Phase2Gpu(int detector_slot) {
+    if (detector_slot < 0 || detector_slot >= PersonDetector::Impl::kPoolSize) return;
+    auto& slot = m_impl->in_flights[detector_slot];
+    // Caller (GpuLoop) traps exceptions; let Ort::Exception / std::exception
+    // propagate so the scheduler can CommitError and release the slot via
+    // Phase3Post not being called — but Phase2 cannot know to release the
+    // slot itself, so we release on the exception path and rethrow.
+    try {
+        m_impl->GpuFrame(slot);
+    } catch (...) {
+        // Free GPU outputs (likely empty) before yielding the slot so the
+        // next frame can claim it; rethrow so scheduler routes the error.
+        slot.gpu_outputs.clear();
+        m_impl->ReleaseSlot(detector_slot);
+        throw;
+    }
+}
+
+int PersonDetector::Phase3Post(PersonDetectorContext& ctx, int detector_slot,
+                               const ROIRect* roi_rects, int roi_count,
+                               const std::vector<std::vector<GAI_Roi>>& original_roi_points,
+                               std::vector<int>& detected_roi_indices) {
+    if (detector_slot < 0 || detector_slot >= PersonDetector::Impl::kPoolSize) return 0;
+    auto& slot = m_impl->in_flights[detector_slot];
+    std::vector<DetectionRect> raw;
+    try {
+        m_impl->PostFrame(slot, raw);
+    } catch (const std::exception& e) {
+        std::cerr << "[AI] Postprocess failed: " << e.what() << std::endl;
+        slot.gpu_outputs.clear();
+        m_impl->ReleaseSlot(detector_slot);
+        return 0;
+    }
+    m_impl->ReleaseSlot(detector_slot);
+
+    m_impl->ApplyRoiFilter(ctx, raw, roi_rects, roi_count, original_roi_points, detected_roi_indices);
+
+    if (gai::VerboseLogging()) {
+        if (!ctx.last_detections.empty()) {
+            std::cout << "[PersonDetector] " << static_cast<int>(ctx.last_detections.size())
+                      << " person detection(s) across " << detected_roi_indices.size() << " ROI(s)" << std::endl;
+        }
+    }
+    return static_cast<int>(ctx.last_detections.size());
+}
+
+void PersonDetector::ClosePipelinedPool() {
+    if (m_impl) m_impl->ClosePool();
+}

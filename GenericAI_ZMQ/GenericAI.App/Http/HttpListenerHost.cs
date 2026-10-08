@@ -221,6 +221,13 @@ namespace GenericAI.App
 
             ConsoleLog.WriteLine($"Received SetParameters request: {body}");
 
+            if (!HealthState.IsNativeReady)
+            {
+                FileLogger.Warn($"SetParameters from {remote} deferred: detector still initializing (503)");
+                await Write(resp, 503, "text/plain", "Service Unavailable: detector initializing, retry");
+                return;
+            }
+
             // Surface ai_settings (dynamic settings from the schema UI) explicitly so
             // we can confirm it arrives. The native detector does not consume it yet —
             // this is the receive side of spec §5.
@@ -277,7 +284,11 @@ namespace GenericAI.App
             try
             {
                 _params.Update(settings.analytics_event_api_url, settings.jpg_compress, triggerIntervalFromSchema, drawRoiFlag);
-                NativeInterop.GAI_SetChannelParameters(_port, ref settings);
+                int rc = NativeInterop.GAI_SetChannelParameters(_port, ref settings);
+                // Degraded init has no scheduler, so rc != 0 there by design; the
+                // recorder already learns about that from /Alive.
+                if (rc != 0 && HealthState.IsHealthy)
+                    throw new InvalidOperationException($"GAI_SetChannelParameters returned {rc}");
             }
             catch (Exception ex)
             {

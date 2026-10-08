@@ -290,6 +290,11 @@ namespace GenericAI.App
 #endif
                 }
 
+                // From here /SetParameters reaches native: after the default seed (so it
+                // can't overwrite the recorder's values) and after the ZMQ receiver started
+                // (so the first SetParameters can't start an MmfReader in ZMQ mode).
+                HealthState.SetNativeReady();
+
                 VerboseConsole("");
                 foreach (ChannelHandle h in _channels)
                 {

@@ -1,0 +1,306 @@
+#include "pch.h"
+#include "channel_pipeline.h"
+#include "detector_factory.h"
+#include "gai_abi.h"
+#include "gai_config.h"
+#include "host_log.h"
+#include "shared_detector_scheduler.h"
+#include "timing_recorder.h"
+#ifdef USE_ZMQ
+#include "zmq_frame_receiver.h"
+#endif
+
+#include <climits>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
+
+#include <unistd.h>
+
+namespace {
+
+std::mutex g_lifecycle_mtx;
+std::unique_ptr<gai::SharedDetectorScheduler> g_scheduler;
+
+// Detector kind actually chosen at init (after the detector_kind<0 fallback to
+// gai::kDetectorKind is resolved), exposed to the C# host via GAI_GetDetectorKind
+// so it can serve the matching /GetSettingsSchema without duplicating the
+// compile-time default. -1 while uninitialized / after Deinit. Guarded by
+// g_lifecycle_mtx (same lock as g_scheduler).
+int g_active_kind = -1;
+
+#ifdef USE_ZMQ
+// ZMQ frame plane (optional). When started, frames arrive over ZMQ (NAL -> decode
+// -> ChannelPipeline::SubmitDecodedFrame) instead of MMF.
+std::unique_ptr<gai::ZmqFrameReceiver> g_zmq_receiver;
+#endif
+
+// Last initialization error (e.g. detector/model load failure). Exposed to the
+// C# host via GAI_GetInitError so it can report it on /Alive instead of the
+// process crashing.
+std::mutex g_init_error_mtx;
+std::string g_init_error;
+
+// Directory of the running executable (UTF-8, from /proc/self/exe). Empty on failure.
+std::string ExeDir() {
+    char buf[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return std::string();
+    buf[n] = '\0';
+    std::string path(buf, static_cast<std::size_t>(n));
+    size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos) return std::string();
+    return path.substr(0, slash);
+}
+
+// Resolve a (possibly relative) resource path against the exe's own directory so
+// it works regardless of the process working directory. A wrapper started by hand
+// or by a service manager can have any CWD; a bare "models/yolo.onnx" would
+// otherwise be looked up there and fail.
+std::string ResolveAgainstExe(const std::string& path) {
+    if (!path.empty() && path[0] == '/')
+        return path;
+    std::string dir = ExeDir();
+    if (dir.empty()) return path;  // fall back to CWD-relative behavior
+    return dir + "/" + path;
+}
+
+}  // namespace
+
+extern "C" {
+
+// detector_kind selects the active detector at runtime:
+//   0 = Motion, 1 = Person (object detection); any other value (e.g. -1)
+//   falls back to the compile-time gai::kDetectorKind in gai_config.h.
+// This lets the recorder spawn one built-in GenericAI.exe and pick the
+// backend via `detector=` on the command line instead of a rebuild.
+GAI_EXPORT int GAI_CDECL GAI_InitializeChannels(const int* ports, int count, int detector_kind) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (g_scheduler) return 0;
+    if (!ports || count <= 0) return 1;
+
+    try {
+        // spec §3 says C# generates X+2k so ports never repeat; FindByPort is
+        // a linear scan that silently returns the first hit, so a duplicate
+        // would route every /SetParameters to one channel and starve the rest.
+        std::set<int> seen;
+        for (int i = 0; i < count; ++i) {
+            if (!seen.insert(ports[i]).second) return 1;
+        }
+
+        gai::TimingRecorder::Instance().Init(ports[0]);
+
+        gai::DetectorKind kind = gai::kDetectorKind;
+        if (detector_kind == static_cast<int>(gai::DetectorKind::Motion))
+            kind = gai::DetectorKind::Motion;
+        else if (detector_kind == static_cast<int>(gai::DetectorKind::Person))
+            kind = gai::DetectorKind::Person;
+        // else: keep compile-time default (gai::kDetectorKind).
+
+        // Resolve the model path against the exe's own folder so it loads no matter
+        // what the recorder set as the working directory.
+        const std::string modelPath = ResolveAgainstExe(gai::kDefaultModelPath);
+
+        std::string detErr;
+        auto det = gai::CreateDetector(kind, modelPath, detErr);
+        if (!det) {
+            // Degraded mode: the detector could not load (e.g. missing model). Do
+            // NOT crash — record the reason and return 5 so the host stays alive
+            // and reports it on /Alive. SetParameters will no-op (g_scheduler null).
+            std::lock_guard<std::mutex> elk(g_init_error_mtx);
+            g_init_error = detErr.empty() ? std::string("detector initialization failed") : detErr;
+            return 5;
+        }
+
+        std::vector<std::unique_ptr<gai::ChannelPipeline>> chans;
+        chans.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            auto p = std::unique_ptr<gai::ChannelPipeline>(
+                         new gai::ChannelPipeline(ports[i]));
+            p->Start();
+            chans.push_back(std::move(p));
+        }
+
+        auto s = std::unique_ptr<gai::SharedDetectorScheduler>(
+                     new gai::SharedDetectorScheduler());
+        if (!s->Start(std::move(det), std::move(chans))) return 4;
+        g_scheduler = std::move(s);
+        g_active_kind = static_cast<int>(kind);
+        return 0;
+    } catch (...) {
+        // C ABI must not let C++ exceptions escape. Half-built channels /
+        // scheduler are cleaned up by unique_ptr destruction: ~ChannelPipeline
+        // runs Stop()+Join(), ~SharedDetectorScheduler runs Stop().
+        return 4;
+    }
+}
+
+GAI_EXPORT int GAI_CDECL GAI_SetChannelParameters(int port, const GAI_Settings* parameters) {
+    if (!parameters) return 1;
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (!g_scheduler) return 1;
+    auto* c = g_scheduler->FindByPort(port);
+    if (!c) return 1;
+    try { c->ApplyParameters(*parameters); }
+    catch (...) { return 1; }
+    return 0;
+}
+
+// Per-channel ai_settings (spec §5). Scalars so it needs no ABI struct change.
+// Object detection uses confidence (0..1; <0 => threshold-derived) + class_mask
+// (bitmask over class_table.h index; <0 => all). Motion uses sensitivity + threshold
+// (0..100; <0 => keep per-ROI value). Each channel keeps its own, so channels react
+// differently. Unused keys for a given detector are passed as <0.
+GAI_EXPORT int GAI_CDECL GAI_SetChannelAiSettings(
+        int port, float confidence, int class_mask, int sensitivity, int threshold,
+        float min_object_size, float max_object_size) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (!g_scheduler) return 1;
+    auto* c = g_scheduler->FindByPort(port);
+    if (!c) return 1;
+    try { c->ApplyAiSettings(confidence, class_mask, sensitivity, threshold, min_object_size, max_object_size); }
+    catch (...) { return 1; }
+    return 0;
+}
+
+GAI_EXPORT void GAI_CDECL GAI_RegisterCallback(GAI_DetectionCallback cb) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (!g_scheduler) return;
+    try {
+        for (std::size_t i = 0; i < g_scheduler->ChannelCount(); ++i) {
+            if (auto* c = g_scheduler->ChannelAt(i)) c->SetCallback(cb);
+        }
+    } catch (...) {}
+}
+
+// Starts the ZMQ frame plane. Call AFTER GAI_InitializeChannels and BEFORE the
+// first /SetParameters (it flips channels into ZMQ mode so they do not spawn an
+// MmfReader). endpoint is the module's bound PUSH address, e.g. "tcp://host:5556";
+// this side connects a PULL socket to it. Returns 0 on success.
+#ifdef USE_ZMQ
+GAI_EXPORT int GAI_CDECL GAI_StartZmqReceiver(const char* endpoint) {
+    if (!endpoint || !endpoint[0]) return 1;
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    if (!g_scheduler) return 1;          // must init channels first
+    if (g_zmq_receiver) return 0;        // already running
+    try {
+        gai::SetZmqFrameMode(true);
+        auto r = std::unique_ptr<gai::ZmqFrameReceiver>(
+                     new gai::ZmqFrameReceiver(endpoint, g_scheduler.get()));
+        if (!r->Start()) return 1;
+        g_zmq_receiver = std::move(r);
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+GAI_EXPORT void GAI_CDECL GAI_StopZmqReceiver(void) {
+    std::unique_ptr<gai::ZmqFrameReceiver> r;
+    {
+        std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+        r = std::move(g_zmq_receiver);
+    }
+    if (r) { try { r->Stop(); } catch (...) {} }
+}
+#endif // USE_ZMQ
+
+GAI_EXPORT int GAI_CDECL GAI_Deinitialize(void) {
+    // ORDER: stop the frame receiver FIRST so no SubmitDecodedFrame races the
+    // channel teardown below (same ordering contract as the shared InferLoop).
+#ifdef USE_ZMQ
+    std::unique_ptr<gai::ZmqFrameReceiver> r;
+    {
+        std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+        r = std::move(g_zmq_receiver);
+    }
+    if (r) { try { r->Stop(); } catch (...) {} }
+#endif
+
+    std::unique_ptr<gai::SharedDetectorScheduler> s;
+    {
+        std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+        s = std::move(g_scheduler);
+        g_active_kind = -1;
+    }
+    if (s) {
+        try { s->Stop(); } catch (...) {}
+    }
+    try { gai::TimingRecorder::Instance().Shutdown(); } catch (...) {}
+    return 0;
+}
+
+// Registers the host log sink. Independent of the scheduler lifecycle so the
+// C# side can register before GAI_InitializeChannels and catch the first
+// channel's pool-sizing / frame-drop diagnostics. Pass nullptr to unregister
+// (the host must do this before freeing its delegate).
+GAI_EXPORT void GAI_CDECL GAI_RegisterLogCallback(GAI_LogCallback cb) {
+    gai::SetHostLogCallback(cb);
+}
+
+// Runtime verbose switch. The host mirrors its GenericAI.Config show_debug flag
+// here so event-driven native console lines (e.g. "[MotionDetector] ...") are
+// suppressed unless debug output is on -- toggled without a rebuild. Lifecycle-
+// independent (like GAI_RegisterLogCallback); call once at startup.
+GAI_EXPORT void GAI_CDECL GAI_SetVerbose(int enabled) {
+    gai::SetVerboseLogging(enabled != 0);
+}
+
+// Writes "CPU" / "CUDA(0)" / "" into buf (null-terminated, ANSI). Returns
+// number of chars written (excluding NUL). Used by C# Program.cs to record
+// the active EP in the log file at startup.
+// Writes the last init error (e.g. model-load failure) into buf (null-terminated,
+// ANSI). Returns chars written (excluding NUL); 0 means no error (healthy). The
+// C# host calls this after a degraded (rc=5) init and serves it on /Alive.
+GAI_EXPORT int GAI_CDECL GAI_GetInitError(char* buf, int buf_len) {
+    if (!buf || buf_len <= 0) return 0;
+    try {
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(g_init_error_mtx);
+            msg = g_init_error;
+        }
+        std::size_t n = msg.size();
+        if (n >= static_cast<std::size_t>(buf_len)) n = static_cast<std::size_t>(buf_len) - 1;
+        std::memcpy(buf, msg.data(), n);
+        buf[n] = '\0';
+        return static_cast<int>(n);
+    } catch (...) {
+        buf[0] = '\0';
+        return 0;
+    }
+}
+
+GAI_EXPORT int GAI_CDECL GAI_GetBackend(char* buf, int buf_len) {
+    if (!buf || buf_len <= 0) return 0;
+    try {
+        std::string label;
+        {
+            std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+            if (g_scheduler) label = g_scheduler->Backend();
+        }
+        std::size_t n = label.size();
+        if (n >= static_cast<std::size_t>(buf_len)) n = static_cast<std::size_t>(buf_len) - 1;
+        std::memcpy(buf, label.data(), n);
+        buf[n] = '\0';
+        return static_cast<int>(n);
+    } catch (...) {
+        buf[0] = '\0';
+        return 0;
+    }
+}
+
+// Detector kind resolved at init: 0 = Motion, 1 = Person. Returns -1 while
+// uninitialized (or after Deinit). Call after GAI_InitializeChannels so the
+// C# host serves /GetSettingsSchema for the detector that actually loaded,
+// including the detector_kind<0 fallback to gai::kDetectorKind — the single
+// source of truth is gai_config.h, no duplicated default on the C# side.
+GAI_EXPORT int GAI_CDECL GAI_GetDetectorKind(void) {
+    std::lock_guard<std::mutex> lk(g_lifecycle_mtx);
+    return g_active_kind;
+}
+
+}
